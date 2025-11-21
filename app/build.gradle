@@ -5,9 +5,6 @@ plugins {
     id 'io.github.zzechao.glide-svga'
     id 'kotlin-kapt'
     id 'com.didi.drouter'
-    id 'com.google.gms.google-services'
-    id 'com.google.firebase.crashlytics'
-
 }
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
@@ -78,18 +75,18 @@ android {
     signingConfigs {
         release {
             keyAlias 'key0'
-            keyPassword 'yoopo123'
-            storeFile file('../jks/yoopo.jks')
-            storePassword 'yoopo123'
+            keyPassword '123456'
+            storeFile file('../key/keys.jks')
+            storePassword '123456'
             //添加V1 V2签名
             v1SigningEnabled true
             v2SigningEnabled true
         }
         debug {
             keyAlias 'key0'
-            keyPassword 'yoopo123'
-            storeFile file('../jks/yoopo.jks')
-            storePassword 'yoopo123'
+            keyPassword '123456'
+            storeFile file('../key/keys.jks')
+            storePassword '123456'
             //添加V1 V2签名
             v1SigningEnabled true
             v2SigningEnabled true
@@ -101,25 +98,19 @@ android {
             minifyEnabled false // 设置为 true 将启用混淆
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
-            firebaseCrashlytics {
-                mappingFileUploadEnabled true
-            }
         }
 
         debug() {
             minifyEnabled false // 设置为 true 将启用混淆
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
-            firebaseCrashlytics {
-                mappingFileUploadEnabled false
-            }
         }
     }
 
     android {
         applicationVariants.all { variant ->
             variant.outputs.configureEach { output ->
-                def appName = "Yoppo"
+                def appName = "frame"
                 def versionName = variant.versionName
                 def versionCode = variant.versionCode
                 def buildTime = new Date().format("yyyyMMdd-hh-mm")
@@ -155,69 +146,7 @@ dependencies {
     androidTestImplementation libs.androidx.junit
     androidTestImplementation libs.androidx.espresso.core
     implementation libs.fragment.ktx
-    implementation libs.agora
 
-    //arm-v8a arm-v7a打包出来的安卓包体积大 达到130多M
-    //implementation "io.agora.rtc:agora-special-full:4.1.1.23"
-
-    implementation libs.okhttp
-    implementation libs.loginterceptor
-    implementation libs.gson
-    implementation libs.eventbus
-    implementation libs.material
-    implementation libs.multidex
-
-    // glide svga
-    implementation(libs.libglidesvga) {
-        exclude group: 'com.squareup.wire', module: 'wire-runtime'
-    }
-    implementation libs.svgaplayer
-    implementation libs.svgaplugin
-    implementation libs.glide
-    kapt libs.glide.compiler
-    implementation libs.play.services.auth
-    implementation libs.play.services.wallet
-    implementation libs.billing
-
-    implementation libs.autosize
-    implementation libs.room.runtime
-    annotationProcessor libs.room.compiler
-    kapt libs.room.compiler
-    implementation libs.room.paging
-    //沉浸式状态栏框架导入
-    implementation libs.immersionbar
-    implementation libs.adapter.helper
-    implementation libs.qmui
-    // 图片压缩 (按需引入)
-    implementation libs.compress
-    // 图片裁剪 (按需引入)
-    implementation libs.ucrop
-    // 自定义相机 (按需引入)
-    //implementation libs.camerax
-    //PictureSelector结束
-    implementation libs.banner
-    implementation libs.permission
-    implementation libs.vap
-    implementation libs.imsdk.plus
-    implementation libs.language
-    implementation libs.easy.widow
-    implementation libs.dialogx
-    implementation libs.kprogresshud
-    implementation libs.smartrefresh      //核心必须依赖
-    implementation libs.smartrefresh.header   //经典刷新头
-    implementation libs.smartrefresh.footer   //经典加载
-    implementation libs.aliyun.oss
-    implementation libs.auto.service
-    kapt libs.auto.service
-    implementation libs.preference
-    implementation libs.preference.rxjava3
-    //日期选择
-    implementation libs.picverView
-    api libs.drouter.api
-    annotationProcessor libs.drouter.api.process
-    api libs.mmkv
-    implementation libs.pagePlayer
-    implementation libs.facebook.android.sdk
 
     api project(':frame:network')
     api project(':frame:mvvm')
@@ -226,9 +155,6 @@ dependencies {
     api project(':frame:media')
     api project(':frame:base')
 
-    implementation platform(libs.firebase.bom)
-    implementation libs.firebase.analytics
-    implementation libs.firebase.crashlytics
 
 }
 // renameAab.gradle

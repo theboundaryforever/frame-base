@@ -45,7 +45,6 @@ rootProject.name = "yuehai"
 rootProject.name = "yoppo-frame"
 include(":app")
 include("frame:coroutine")
-include("frame:room")
 include("frame:network")
 include("frame:util")
 include("frame:data")
@@ -53,4 +52,3 @@ include("frame:mvvm")
 include("frame:media")
 include("frame:base")
 include("frame:sound")
-include("frame:commonui")
