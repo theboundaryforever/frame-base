@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="network_network_error">Network connection failed</string>
+    <string name="network_timeout_error">Request timed out</string>
+    <string name="network_request_error">Request failed</string>
+    <string name="network_unknow_error">Unknown error</string>
+</resources>

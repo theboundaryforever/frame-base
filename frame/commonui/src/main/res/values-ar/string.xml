@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="common_say_something">قل شيئًا</string>
+    <string name="common_send">إرسال</string>
+    <string name="common_input_empty">يجب ألا يكون الإدخال فارغًا</string>
+    <string name="common_success">النجاح</string>
+    <string name="common_dynamic_picture_tips">فقط مستخدمي VIP5 و VIP6 يمكنهم استخدام صور GIF الرمزية</string>
+    <string name="common_mic_invite_Tips">نصائح</string>
+    <string name="common_user_join_block_tip">انضم إلى القائمة السوداء لحظر المستخدم نهائيًا</string>
+    <string name="common_cancel_str">إلغاء</string>
+    <string name="common_confirm">تأكيد</string>
+    <string name="common_permission_title">طلب الأذونات</string>
+    <string name="common_save"> حفظ</string>
+    <string name="common_gif_tips">ملف GIF الذي قمت بتحميله كبير جدًا، يرجى استبداله</string>
+    <string name="common_dynamic_picture_tips2">لا يمكن تحميل الصور الديناميكية</string>
+    <string name="common_id_label_2">المعرف:</string>
+</resources>

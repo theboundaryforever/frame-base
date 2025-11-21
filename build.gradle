@@ -1,0 +1,73 @@
+
+
+buildscript {
+    dependencies {
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.0")
+        classpath "io.github.zzechao.gradle:glidesvgaplugin:1.0.2"
+        classpath 'com.google.gms:google-services:4.3.15'
+        classpath libs.android.build.gradle
+        classpath libs.kotlin.gradle.plugin
+        classpath libs.drouter.plugin
+        classpath libs.firebase.crashlytics.gradle
+    }
+
+    repositories {
+        mavenCentral()
+        maven { url "https://mirrors.tencent.com/nexus/repository/maven-public/" }
+        maven { url 'https://jitpack.io' } // 必须添加
+        gradlePluginPortal()
+        google()
+        flatDir {
+            dirs 'libs'  // 放 AAR 的文件夹
+        }
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}
+
+task detectUnusedDependencies {
+    group = "cleanup"
+    description = "简单检测未使用的 implementation 依赖（不依赖任何插件）"
+
+    doLast {
+        def buildFile = file("app/build.gradle") // 根据你项目路径修改
+        def sourceDirs = fileTree("app/src/main/java").matching { include "**/*.java", "**/*.kt" }
+        def declaredDeps = []
+
+        println "\n🔍 正在解析 build.gradle 中的 implementation 依赖..."
+
+        // 从 build.gradle 中提取 implementation 依赖
+        buildFile.eachLine { line ->
+            def match = line.trim() =~ /implementation\s+['"](.+:.+:.+)['"]/
+            if (match) {
+                declaredDeps << match[0][1]
+            }
+        }
+
+        println "\n📦 已声明依赖："
+        declaredDeps.each { println "  $it" }
+
+        // 搜索源码中是否引用这些依赖的 groupId/artifactId 关键字
+        def unused = []
+        println "\n🔎 正在分析源码引用..."
+        declaredDeps.each { dep ->
+            def parts = dep.split(":")
+            def keyword = parts[0].replace('.', '/') // groupId，例如 com.squareup.okhttp3
+            def used = sourceDirs.any { file -> file.text.contains(keyword) }
+
+            if (!used) {
+                unused << dep
+            }
+        }
+
+        if (unused.isEmpty()) {
+            println "\n✅ 所有依赖似乎都有使用。"
+        } else {
+            println "\n🗑️ 可能未使用的依赖（建议手动确认后移除）："
+            unused.each { println "  // implementation '$it'" }
+        }
+    }
+}
+

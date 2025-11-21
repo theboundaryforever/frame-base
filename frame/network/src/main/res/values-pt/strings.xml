@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="network_network_error">Falha na conexão de rede</string>
+    <string name="network_timeout_error">Tempo de requisição esgotado</string>
+    <string name="network_request_error">Falha na solicitação</string>
+    <string name="network_unknow_error">Erro desconhecido</string>
+</resources>

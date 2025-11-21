@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="common_say_something">Katakan Sesuatu</string>
+    <string name="common_send">Kirim</string>
+    <string name="common_input_empty">Input tidak boleh kosong</string>
+    <string name="common_success">Berhasil</string>
+    <string name="common_im_join_error">Login gagal, silakan login kembali</string>
+    <string name="common_copy_success_tip">Salin Berhasil</string>
+    <string name="common_dynamic_picture_tips">Hanya pengguna VIP5 dan VIP6 yang dapat menggunakan avatar GIF</string>
+    <string name="common_percent">%s%%</string>
+    <string name="common_get_verfiy_code">Dapatkan kode verifikasi</string>
+    <string name="common_verfiy_resend_code">Dapatkan kode verifikasi</string>
+    <string name="common_mic_invite_Tips">Tips</string>
+    <string name="common_user_join_block_tip">Bergabung dengan daftar hitam untuk memblokir pengguna secara permanen</string>
+    <string name="common_cancel_str">Batal</string>
+    <string name="common_confirm">Konfirmasi</string>
+    <string name="common_permission_title">Aplikasi izin</string>
+    <string name="common_save">Simpan</string>
+    <string name="common_gif_tips">File GIF yang Anda unggah terlalu besar, harap ganti</string>
+    <string name="common_dynamic_picture_tips2">Gambar dinamis tidak dapat diunggah</string>
+    <string name="common_id_label_2">ID:</string>
+</resources>

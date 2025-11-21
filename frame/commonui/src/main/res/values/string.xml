@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="common_say_something">SaySomething</string>
+    <string name="common_send">Send</string>
+    <string name="common_input_empty">Input must not empty</string>
+    <string name="common_success">Success</string>
+    <string name="common_im_join_error">Login failed, please log in again</string>
+    <string name="common_copy_success_tip">Copy Success</string>
+    <string name="common_dynamic_picture_tips">Only VIP5 and VIP6 users can use GIF avatars</string>
+    <string name="common_percent">%s%%</string>
+    <string name="common_get_verfiy_code">Get verification code</string>
+    <string name="common_verfiy_resend_code">Get verification code</string>
+    <string name="common_mic_invite_Tips">Tips</string>
+    <string name="common_user_join_block_tip">Join the blacklist to permanently block the user</string>
+    <string name="common_cancel_str">Cancel</string>
+    <string name="common_confirm">Confirm</string>
+    <string name="common_permission_title">Permission application</string>
+    <string name="common_save">Save</string>
+    <string name="common_gif_tips">The GIF file you uploaded is too large, please replace it</string>
+    <string name="common_dynamic_picture_tips2">Dynamic pictures cannot be uploaded</string>
+    <string name="common_id_label_2">ID:</string>
+</resources>

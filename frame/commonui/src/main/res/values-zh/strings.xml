@@ -1,0 +1,17 @@
+<!--<?xml version="1.0" encoding="utf-8"?>-->
+<!--<resources>-->
+<!--    <string name="common_say_something">SaySomething</string>-->
+<!--    <string name="common_send">发送</string>-->
+<!--    <string name="common_input_empty">输入不能为空</string>-->
+<!--    <string name="common_success">成功</string>-->
+<!--    <string name="common_dynamic_picture_tips">仅VIP5和VIP6用户可使用GIF头像</string>-->
+<!--    <string name="common_mic_invite_Tips">提示</string>-->
+<!--    <string name="common_user_join_block_tip">加入黑名单以永久屏蔽该用户</string>-->
+<!--    <string name="common_cancel_str">取消</string>-->
+<!--    <string name="common_confirm">确认</string>-->
+<!--    <string name="common_permission_title">权限申请</string>-->
+<!--    <string name="common_save">保存</string>-->
+<!--    <string name="common_gif_tips">“您上传的GIF文件过大，请更换</string>-->
+<!--    <string name="common_dynamic_picture_tips2">不可以上传动态图片</string>-->
+<!--</resources>-->
+<resources></resources>

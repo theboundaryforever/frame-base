@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:padding="2dp">
+
+    <androidx.appcompat.widget.AppCompatImageView
+        android:id="@+id/iv_country"
+        android:layout_width="20dp"
+        android:layout_height="13dp"
+        android:layout_marginEnd="4dp"
+        android:scaleType="fitXY"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        tools:src="@mipmap/placeholder_res_normal_ic" />
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/cl_id"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:minHeight="20dp"
+        android:paddingHorizontal="2dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toEndOf="@+id/iv_country"
+        app:layout_constraintTop_toTopOf="parent">
+
+
+        <!-- ID 图标 -->
+        <androidx.appcompat.widget.AppCompatImageView
+            android:id="@+id/iv_id_label"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:src="@mipmap/common_user_id_ic"
+            android:visibility="gone"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <!-- ID 文本 -->
+        <androidx.appcompat.widget.AppCompatTextView
+            android:id="@+id/tv_id"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:includeFontPadding="false"
+            android:paddingHorizontal="2dp"
+            android:textColor="@color/color_80ffffff"
+            android:textSize="12sp"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toStartOf="@id/iv_copy_ic"
+            app:layout_constraintStart_toEndOf="@id/iv_id_label"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:text="1111111" />
+
+        <!-- 复制按钮 -->
+        <androidx.appcompat.widget.AppCompatImageView
+            android:id="@+id/iv_copy_ic"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:paddingVertical="5dp"
+            android:paddingEnd="5dp"
+            android:src="@mipmap/common_id_copy_ic"
+
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toStartOf="@id/space_copy_margin"
+            app:layout_constraintStart_toEndOf="@id/tv_id"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <!-- 间距 View -->
+        <View
+            android:id="@+id/space_copy_margin"
+            android:layout_width="6dp"
+            android:layout_height="0dp"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+

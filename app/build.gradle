@@ -1,0 +1,301 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.kapt'
+    id 'io.github.zzechao.glide-svga'
+    id 'kotlin-kapt'
+    id 'com.didi.drouter'
+    id 'com.google.gms.google-services'
+    id 'com.google.firebase.crashlytics'
+
+}
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+
+
+android {
+    namespace 'com.yuehai.yoopo.frame'
+    compileSdk libs.versions.compileSdk.get().toInteger()
+
+    defaultConfig {
+        applicationId "com.yuehai.yoopo.frame"
+        minSdk 24
+        targetSdk libs.versions.targetSdk.get().toInteger()
+        versionCode libs.versions.versionCode.get().toInteger()
+        versionName libs.versions.versionName.get().toString()
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a'
+        }
+
+        javaCompileOptions {
+            annotationProcessorOptions {
+                arguments = ["room.schemaLocation": "$projectDir/schemas".toString()]
+            }
+        }
+
+        multiDexEnabled = true
+        buildConfigField("String", "AGORA_APP_ID_DEBUG", '"408071c077384b439d480ca3afb01e8c"')
+        buildConfigField("String", "AGORA_APP_ID_RELEASE", '"88b2d1c75f6449cf98d7c962c32792b4"')
+
+    }
+
+
+    kotlinOptions {
+        jvmTarget = '11'
+    }
+
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+
+    buildFeatures {
+        dataBinding true
+        buildConfig true
+    }
+
+    viewBinding {
+        enabled = true
+    }
+
+    dataBinding {
+        enable = true
+    }
+
+
+    /**
+     lintOptions {
+     abortOnError false //不在error情况下中断
+     disable 'MissingTranslation' //无视字符串缺少本地化的情况
+     disable 'ExtraTranslation'//无视多做了本地化的字符串
+     }
+     **/
+
+    signingConfigs {
+        release {
+            keyAlias 'key0'
+            keyPassword 'yoopo123'
+            storeFile file('../jks/yoopo.jks')
+            storePassword 'yoopo123'
+            //添加V1 V2签名
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+        debug {
+            keyAlias 'key0'
+            keyPassword 'yoopo123'
+            storeFile file('../jks/yoopo.jks')
+            storePassword 'yoopo123'
+            //添加V1 V2签名
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false // 设置为 true 将启用混淆
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+            firebaseCrashlytics {
+                mappingFileUploadEnabled true
+            }
+        }
+
+        debug() {
+            minifyEnabled false // 设置为 true 将启用混淆
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+            firebaseCrashlytics {
+                mappingFileUploadEnabled false
+            }
+        }
+    }
+
+    android {
+        applicationVariants.all { variant ->
+            variant.outputs.configureEach { output ->
+                def appName = "Yoppo"
+                def versionName = variant.versionName
+                def versionCode = variant.versionCode
+                def buildTime = new Date().format("yyyyMMdd-hh-mm")
+                def buildTypeName = variant.buildType.name
+
+                def fileExtension = output.outputFileName.endsWith(".aab") ? "aab" : "apk"
+
+                // 如果是 release 构建，添加 "_release" 标志
+                def suffix = buildTypeName == "release" ? "_release" : ""
+
+                def fileName = "${appName}_v${versionName}_${versionCode}_${buildTime}${suffix}.${fileExtension}"
+
+                // 设置新的输出文件名
+                output.outputFileName = fileName
+            }
+        }
+    }
+
+}
+
+
+dependencies {
+    implementation libs.androidx.core.ktx
+    implementation libs.androidx.appcompat
+    implementation libs.material
+    implementation libs.androidx.constraintlayout
+    implementation libs.androidx.lifecycle.livedata.ktx
+    implementation libs.androidx.lifecycle.viewmodel.ktx
+    implementation libs.androidx.navigation.fragment.ktx
+    implementation libs.androidx.navigation.ui.ktx
+    implementation libs.androidx.activity
+    testImplementation libs.junit
+    androidTestImplementation libs.androidx.junit
+    androidTestImplementation libs.androidx.espresso.core
+    implementation libs.fragment.ktx
+    implementation libs.agora
+
+    //arm-v8a arm-v7a打包出来的安卓包体积大 达到130多M
+    //implementation "io.agora.rtc:agora-special-full:4.1.1.23"
+
+    implementation libs.okhttp
+    implementation libs.loginterceptor
+    implementation libs.gson
+    implementation libs.eventbus
+    implementation libs.material
+    implementation libs.multidex
+
+    // glide svga
+    implementation(libs.libglidesvga) {
+        exclude group: 'com.squareup.wire', module: 'wire-runtime'
+    }
+    implementation libs.svgaplayer
+    implementation libs.svgaplugin
+    implementation libs.glide
+    kapt libs.glide.compiler
+    implementation libs.play.services.auth
+    implementation libs.play.services.wallet
+    implementation libs.billing
+
+    implementation libs.autosize
+    implementation libs.room.runtime
+    annotationProcessor libs.room.compiler
+    kapt libs.room.compiler
+    implementation libs.room.paging
+    //沉浸式状态栏框架导入
+    implementation libs.immersionbar
+    implementation libs.adapter.helper
+    implementation libs.qmui
+    // 图片压缩 (按需引入)
+    implementation libs.compress
+    // 图片裁剪 (按需引入)
+    implementation libs.ucrop
+    // 自定义相机 (按需引入)
+    //implementation libs.camerax
+    //PictureSelector结束
+    implementation libs.banner
+    implementation libs.permission
+    implementation libs.vap
+    implementation libs.imsdk.plus
+    implementation libs.language
+    implementation libs.easy.widow
+    implementation libs.dialogx
+    implementation libs.kprogresshud
+    implementation libs.smartrefresh      //核心必须依赖
+    implementation libs.smartrefresh.header   //经典刷新头
+    implementation libs.smartrefresh.footer   //经典加载
+    implementation libs.aliyun.oss
+    implementation libs.auto.service
+    kapt libs.auto.service
+    implementation libs.preference
+    implementation libs.preference.rxjava3
+    //日期选择
+    implementation libs.picverView
+    api libs.drouter.api
+    annotationProcessor libs.drouter.api.process
+    api libs.mmkv
+    implementation libs.pagePlayer
+    implementation libs.facebook.android.sdk
+
+    api project(':frame:network')
+    api project(':frame:mvvm')
+    api project(':frame:coroutine')
+    api project(':frame:util')
+    api project(':frame:media')
+    api project(':frame:base')
+
+    implementation platform(libs.firebase.bom)
+    implementation libs.firebase.analytics
+    implementation libs.firebase.crashlytics
+
+}
+// renameAab.gradle
+afterEvaluate {
+    def versionName = android.defaultConfig.versionName ?: "unknown"
+    def versionCode = android.defaultConfig.versionCode ?: 1
+    def appName = "yoppo"
+    def buildTime = new Date().format("yyyyMMdd")
+
+    // 重命名 AAB 文件
+    tasks.named("bundleRelease").configure {
+        doLast {
+            def bundleDir = file("$buildDir/outputs/bundle/release")
+            def aabFile = new File(bundleDir, "app-release.aab")
+            def newName = "${appName}_v${versionName}_${versionCode}_${buildTime}.aab"
+            def renamedFile = new File(bundleDir, newName)
+
+            if (aabFile.exists()) {
+                aabFile.renameTo(renamedFile)
+                println "✅ AAB file renamed to: $newName"
+            } else {
+                println "⚠️ AAB file not found at: ${aabFile.absolutePath}"
+            }
+        }
+    }
+
+    // 重命名 APK 文件
+    tasks.named("assembleDebug").configure {
+        doLast {
+            def debugDir = file("$buildDir/outputs/apk/debug")
+            def apkFile = new File(debugDir, "app-debug.apk")
+            def newName = "${appName}_v${versionName}_${versionCode}_${buildTime}.apk"
+            def renamedFile = new File(debugDir, newName)
+
+            // Debugging the file existence
+            if (!debugDir.exists()) {
+                println "⚠️ Output directory does not exist: $debugDir"
+            } else {
+                if (apkFile.exists()) {
+                    apkFile.renameTo(renamedFile)
+                    println "✅ APK file renamed to: $newName"
+                } else {
+                    println "⚠️ APK file not found at: ${apkFile.absolutePath}"
+                }
+            }
+        }
+    }
+
+    // 重命名 Release APK 文件
+    tasks.named("assembleRelease").configure {
+        doLast {
+            def releaseDir = file("$buildDir/outputs/apk/release")
+            def apkFile = new File(releaseDir, "app-release-unsigned.apk")
+            def newName = "${appName}_v${versionName}_${versionCode}_${buildTime}.apk"
+            def renamedFile = new File(releaseDir, newName)
+
+            // Debugging the file existence
+            if (!releaseDir.exists()) {
+                println "⚠️ Output directory does not exist: $releaseDir"
+            } else {
+                if (apkFile.exists()) {
+                    apkFile.renameTo(renamedFile)
+                    println "✅ APK file renamed to: $newName"
+                } else {
+                    println "⚠️ APK file not found at: ${apkFile.absolutePath}"
+                }
+            }
+        }
+    }
+}

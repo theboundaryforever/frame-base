@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="network_network_error">Koneksi jaringan gagal</string>
+    <string name="network_timeout_error">Permintaan waktu habis</string>
+    <string name="network_request_error">Permintaan gagal</string>
+    <string name="network_unknow_error">Kesalahan tidak diketahui</string>
+</resources>
