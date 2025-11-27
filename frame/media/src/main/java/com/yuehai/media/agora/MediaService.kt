@@ -19,8 +19,8 @@ import com.yuehai.media.data.RtcType
 import com.yuehai.media.listener.IMediaMusicListener
 import com.yuehai.media.listener.IMediaRtcListener
 import com.yuehai.util.AppUtil
-import com.yuehai.util.PackageUtil
 import com.yuehai.util.language.collection.ConcurrentList
+import com.yuehai.util.util.PackageUtil
 import io.agora.rtc2.ClientRoleOptions
 import io.agora.rtc2.Constants
 import io.agora.rtc2.Constants.AUDIO_MIXING_REASON_ALL_LOOPS_COMPLETED

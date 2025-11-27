@@ -1,8 +1,8 @@
 package com.yuehai.data.collection.path
 
+import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.tencent.mmkv.MMKV
-import com.yuehai.data.collection.path.json.gson
 
 class YQSPUtils private constructor() {
 
@@ -18,7 +18,7 @@ class YQSPUtils private constructor() {
             }
         }
 
-        private const val SP_NAME = Constants.spLoginUser// SharedPreferences 文件名
+        // private const val SP_NAME = Constants.spLoginUser// SharedPreferences 文件名
     }
 
     //备注 Application 用法 start
@@ -97,6 +97,8 @@ class YQSPUtils private constructor() {
     fun getFloat(key: String, defaultValue: Float = 0f): Float {
         return mmkv.decodeFloat(key, defaultValue)
     }
+
+    private val gson = Gson()
 
     // 保存字符串列表（历史搜索记录）
     fun putStringList(key: String, list: List<String>) {

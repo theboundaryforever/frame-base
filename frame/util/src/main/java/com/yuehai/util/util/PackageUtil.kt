@@ -1,4 +1,4 @@
-package com.yuehai.util
+package com.yuehai.util.util
 
 import android.content.Context
 import android.content.pm.PackageInfo

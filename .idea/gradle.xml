@@ -17,7 +17,6 @@
             <option value="$PROJECT_DIR$/frame/data" />
             <option value="$PROJECT_DIR$/frame/media" />
             <option value="$PROJECT_DIR$/frame/mvvm" />
-            <option value="$PROJECT_DIR$/frame/network" />
             <option value="$PROJECT_DIR$/frame/sound" />
             <option value="$PROJECT_DIR$/frame/util" />
           </set>
