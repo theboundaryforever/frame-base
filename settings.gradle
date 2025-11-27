@@ -7,15 +7,14 @@ pluginManagement {
                 includeGroupByRegex("androidx.*")
             }
         }
+        maven { url 'https://maven.aliyun.com/repository/central' }
+        maven { url 'https://maven.aliyun.com/nexus/content/groups/public/' }
+        maven { url 'https://maven.aliyun.com/nexus/content/repositories/jcenter' }
+        maven { url 'https://maven.aliyun.com/nexus/content/repositories/google' }
+        maven { url 'https://maven.aliyun.com/nexus/content/repositories/gradle-plugin' }
+        maven { url "https://mirrors.tencent.com/nexus/repository/maven-public/" }
 
-        maven ("https://maven.aliyun.com/repository/central")
-        maven ("https://maven.aliyun.com/nexus/content/groups/public/")
-        maven ("https://maven.aliyun.com/nexus/content/repositories/jcenter")
-        maven ("https://maven.aliyun.com/nexus/content/repositories/google")
-        maven ("https://maven.aliyun.com/nexus/content/repositories/gradle-plugin")
-        maven ("https://mirrors.tencent.com/nexus/repository/maven-public/")
-
-        maven ("https://jitpack.io")
+        maven { url 'https://jitpack.io' }
         mavenCentral()
         gradlePluginPortal()
     }
@@ -26,13 +25,13 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io")
-        maven("https://maven.aliyun.com/repository/central")
-        maven("https://maven.aliyun.com/nexus/content/groups/public/")
-        maven("https://maven.aliyun.com/nexus/content/repositories/jcenter")
-        maven("https://maven.aliyun.com/nexus/content/repositories/google")
-        maven("https://maven.aliyun.com/nexus/content/repositories/gradle-plugin")
-        maven("https://mirrors.tencent.com/nexus/repository/maven-public/")
+        maven { url 'https://jitpack.io' }
+        maven { url 'https://maven.aliyun.com/repository/central' }
+        maven { url 'https://maven.aliyun.com/nexus/content/groups/public/' }
+        maven { url 'https://maven.aliyun.com/nexus/content/repositories/jcenter' }
+        maven { url 'https://maven.aliyun.com/nexus/content/repositories/google' }
+        maven { url 'https://maven.aliyun.com/nexus/content/repositories/gradle-plugin' }
+        maven { url "https://mirrors.tencent.com/nexus/repository/maven-public/" }
         flatDir {
             dirs("${rootDir}/app/libs")
         }

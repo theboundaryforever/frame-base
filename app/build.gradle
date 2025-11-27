@@ -76,7 +76,7 @@ android {
         release {
             keyAlias 'key0'
             keyPassword '123456'
-            storeFile file('../key/keys.jks')
+            storeFile file('../key/key0')
             storePassword '123456'
             //添加V1 V2签名
             v1SigningEnabled true
@@ -85,7 +85,7 @@ android {
         debug {
             keyAlias 'key0'
             keyPassword '123456'
-            storeFile file('../key/keys.jks')
+            storeFile file('../key/key0')
             storePassword '123456'
             //添加V1 V2签名
             v1SigningEnabled true

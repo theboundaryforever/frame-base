@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Yoppoframe" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Yoppoframe" parent="ThemeOverlay.AppCompat.Dark" />
+    <style name="SplashThem" parent="Theme.MaterialComponents.DayNight.NoActionBar"/>
 </resources>

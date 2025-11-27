@@ -15,7 +15,7 @@
             android:name="com.yuehai.yoppo.frame.ui.theme.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.Yoppoframe">
+            android:theme="@style/SplashThem">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
