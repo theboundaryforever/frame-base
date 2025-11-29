@@ -4,7 +4,6 @@ plugins {
     id 'org.jetbrains.kotlin.kapt'
     id 'io.github.zzechao.glide-svga'
     id 'kotlin-kapt'
-    id 'com.didi.drouter'
 }
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
@@ -148,13 +147,12 @@ dependencies {
     implementation libs.fragment.ktx
 
 
-    runtimeOnly(':frame:network')
-    runtimeOnly(':frame:sound')
-    runtimeOnly(':frame:mvvm')
-    runtimeOnly(':frame:coroutine')
-    runtimeOnly(':frame:util')
-    runtimeOnly(':frame:media')
-    runtimeOnly(':frame:base')
+    api project(':frame:mvvm')
+    api project(':frame:coroutine')
+    api project(':frame:util')
+    api project(':frame:media')
+    api project(':frame:base')
+
 
 
 
