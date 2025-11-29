@@ -155,7 +155,7 @@ dependencies {
     api project(':frame:media')
     api project(':frame:base')
 
-
+    implementation 'com.github.theboundaryforever.frame-base:base:v1.0.3-alpha1'
 }
 // renameAab.gradle
 afterEvaluate {
