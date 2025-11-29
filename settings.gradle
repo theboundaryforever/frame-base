@@ -45,7 +45,6 @@ rootProject.name = "yoppo-frame"
 include(":app")
 include("frame:coroutine")
 include("frame:util")
-include("frame:data")
 include("frame:mvvm")
 include("frame:media")
 include("frame:base")
