@@ -147,15 +147,17 @@ dependencies {
     androidTestImplementation libs.androidx.espresso.core
     implementation libs.fragment.ktx
 
-    implementation("com.github.theboundaryforever:frame-base:v1.0.3")
-    //api project(':frame:network')
-    api project(':frame:mvvm')
-    api project(':frame:coroutine')
-    api project(':frame:util')
-    api project(':frame:media')
-    api project(':frame:base')
 
-    implementation 'com.github.theboundaryforever.frame-base:base:v1.0.3-alpha1'
+    runtimeOnly(':frame:network')
+    runtimeOnly(':frame:sound')
+    runtimeOnly(':frame:mvvm')
+    runtimeOnly(':frame:coroutine')
+    runtimeOnly(':frame:util')
+    runtimeOnly(':frame:media')
+    runtimeOnly(':frame:base')
+
+
+    implementation 'com.github.theboundaryforever.frame-base:base:v1.0.3-alpha2'
 }
 // renameAab.gradle
 afterEvaluate {
