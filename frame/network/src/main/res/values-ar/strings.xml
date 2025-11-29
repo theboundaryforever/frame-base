@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="network_network_error">فشل اتصال الشبكة</string>
-    <string name="network_timeout_error">انتهت مهلة الطلب</string>
-    <string name="network_request_error">فشل الطلب</string>
-    <string name="network_unknow_error">خطأ غير معروف</string>
-</resources>
