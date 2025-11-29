@@ -1,10 +1,11 @@
 plugins {
     id 'com.android.library'
     id 'org.jetbrains.kotlin.android'
+    id 'kotlin-parcelize'
 }
 
 android {
-    namespace 'com.yuehai.base'
+    namespace 'com.yuehai.util'
     compileSdk libs.versions.compileSdk.get().toInteger()
 
     defaultConfig {
@@ -26,33 +27,17 @@ android {
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_11.majorVersion
     }
-    viewBinding {
-        enabled = true
+    buildFeatures {
+        buildConfig = true
     }
 }
 
 dependencies {
-    implementation libs.kotlin.stdlib
 
-    //androidx
-    implementation libs.androidx.core.ktx
-    implementation libs.androidx.appcompat
-    implementation libs.androidx.activity
-    api libs.androidx.lifecycle.viewmodel.ktx
-    api libs.androidx.lifecycle.livedata.ktx
-    implementation libs.androidx.lifecycle.common.java8
-    implementation libs.immersionbar
-    implementation libs.qmui
-    implementation libs.svgaplayer
-    implementation libs.kprogresshud
-    api project(':frame:coroutine')
-    api project(':frame:mvvm')
-    api project(':frame:util')
-    api project(':frame:sound')
-    api project(':frame:media')
-    api project(':frame:data')
-
-
+    implementation libs.gson
+    implementation libs.mmkv
+    implementation libs.adapter.helper
+    implementation libs.recyclerview
     //test
     testImplementation libs.junit
     androidTestImplementation libs.androidx.junit
