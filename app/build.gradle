@@ -157,7 +157,7 @@ dependencies {
     runtimeOnly(':frame:base')
 
 
-    implementation 'com.github.theboundaryforever.frame-base:base:v1.0.3-alpha2'
+
 }
 // renameAab.gradle
 afterEvaluate {

@@ -48,6 +48,10 @@ dependencies {
     api project(':frame:coroutine')
     api project(':frame:mvvm')
     api project(':frame:util')
+    api project(':frame:sound')
+    api project(':frame:network')
+    api project(':frame:media')
+
 
     //test
     testImplementation libs.junit
