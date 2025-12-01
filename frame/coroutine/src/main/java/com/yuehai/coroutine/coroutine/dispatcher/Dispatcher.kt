@@ -31,10 +31,17 @@ object Dispatcher {
     private val AVAILABLE_PROCESSORS = Runtime.getRuntime().availableProcessors()
     private const val UI_CORE_POOL_SIZE = 1
     private const val HIGH_SERIAL_CORE_POOL_SIZE = 1
+
+    // -----------------------------------------------------------------------
+    // 优化点 1/3: 限制 IO_CORE_POOL_SIZE 最大为 2 (防止低优先级并发过高)
     private val IO_CORE_POOL_SIZE =
-        2.coerceAtLeast((AVAILABLE_PROCESSORS - UI_CORE_POOL_SIZE - HIGH_SERIAL_CORE_POOL_SIZE) / 2)
+        2.coerceAtMost(2.coerceAtLeast((AVAILABLE_PROCESSORS - UI_CORE_POOL_SIZE - HIGH_SERIAL_CORE_POOL_SIZE) / 2))
+
+    // 优化点 2/3: 限制 CPU_CORE_POOL_SIZE 最大为 2 (防止高优先级任务抢占过多CPU)
     private val CPU_CORE_POOL_SIZE =
-        2.coerceAtLeast(AVAILABLE_PROCESSORS - UI_CORE_POOL_SIZE - HIGH_SERIAL_CORE_POOL_SIZE)
+        2.coerceAtMost(2.coerceAtLeast(AVAILABLE_PROCESSORS - UI_CORE_POOL_SIZE - HIGH_SERIAL_CORE_POOL_SIZE))
+    // -----------------------------------------------------------------------
+
 
     init {
         Log.d(
@@ -109,6 +116,7 @@ object Dispatcher {
 
     /**
      * 高优先级执行器，程序中尽量使用该执行器
+     * 核心线程数已通过 CPU_CORE_POOL_SIZE 限制为最大 2
      */
     val highExecutor: ExecutorService by lazy {
         Executors.newFixedThreadPool(
@@ -121,8 +129,8 @@ object Dispatcher {
 
     private val lowBackupExecutor by lazy {
         ThreadPoolExecutor(
-            IO_CORE_POOL_SIZE,
-            IO_CORE_POOL_SIZE,
+            IO_CORE_POOL_SIZE, // 核心线程数已限制为最大 2
+            IO_CORE_POOL_SIZE, // 最大线程数跟随核心线程数（已限制为最大 2）
             30,
             TimeUnit.SECONDS,
             LinkedBlockingQueue(),
@@ -138,8 +146,9 @@ object Dispatcher {
      */
     val lowExecutor by lazy {
         ThreadPoolExecutor(
-            1,
-            20.coerceAtLeast(AVAILABLE_PROCESSORS),
+            // 优化点 3/3: 核心线程数设置为 2（取代硬编码的 1），保证基础并发，同时不超过最大限制
+            2,
+            20.coerceAtLeast(AVAILABLE_PROCESSORS), // 保持最大线程数不变
             30,
             TimeUnit.SECONDS,
             SynchronousQueue(),
@@ -177,6 +186,4 @@ object Dispatcher {
     fun Handler.remove(runnable: Runnable) {
         removeCallbacks(runnable)
     }
-
-
 }
