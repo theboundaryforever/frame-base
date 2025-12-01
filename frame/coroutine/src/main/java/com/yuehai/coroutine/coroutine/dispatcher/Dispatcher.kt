@@ -64,7 +64,7 @@ object Dispatcher {
     // High-Serial 单线程序列化（核心场景）
     // -----------------------------------------------------------------------
 
-    private val highSerialHandler: Handler by lazy {
+     val highSerialHandler: Handler by lazy {
         Handler(
             HandlerThread(
                 "high_serial_handle_thread",
