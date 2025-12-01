@@ -10,51 +10,61 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
 import java.lang.Thread.NORM_PRIORITY
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.RejectedExecutionHandler
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.*
 
 /**
- * 线程池统一管理，管理策略：
- * 1. 1条UI主线程
- * 2. 1条高优先级单线程，用于核心场景序列化并发控制
- * 3. 1条低优先级单线程，用于非核心场景序列化并发控制
- * 4. 1个高优先级线程池，用于大部分场景的任务执行
- * 5. 1个低优先级线程池，用于处理耗时&不高优任务，这类任务一定要使用它，避免对核心场景CPU的抢占
+ * 统一线程池 Dispatcher
+ * 结构说明：
+ * - UI 主线程 1 条
+ * - 高优先级 HandlerThread（单线程序列化）
+ * - 低优先级 HandlerThread（单线程序列化）
+ * - 高优先级线程池（用于多数任务）
+ * - 低优先级线程池（用于耗时&不重要任务，避免抢占 CPU）
+ * - 低优先级 Backup（有界兜底，防止内存爆炸）
  */
 object Dispatcher {
 
     private val AVAILABLE_PROCESSORS = Runtime.getRuntime().availableProcessors()
+
     private const val UI_CORE_POOL_SIZE = 1
     private const val HIGH_SERIAL_CORE_POOL_SIZE = 1
 
-    // -----------------------------------------------------------------------
-    // 优化点 1/3: 限制 IO_CORE_POOL_SIZE 最大为 2 (防止低优先级并发过高)
-    private val IO_CORE_POOL_SIZE =
-        2.coerceAtMost(2.coerceAtLeast((AVAILABLE_PROCESSORS - UI_CORE_POOL_SIZE - HIGH_SERIAL_CORE_POOL_SIZE) / 2))
+    /**
+     * 正式版 IO/CPU Thread 数计算（不再恒为 2）
+     *
+     * 限制：
+     * - 至少 2
+     * - 最多 4（避免过度竞争）
+     * - 自动根据设备性能调整
+     */
+    private val IO_CORE_POOL_SIZE = ((AVAILABLE_PROCESSORS - 1) / 2)
+        .coerceAtLeast(2)
+        .coerceAtMost(4)
 
-    // 优化点 2/3: 限制 CPU_CORE_POOL_SIZE 最大为 2 (防止高优先级任务抢占过多CPU)
-    private val CPU_CORE_POOL_SIZE =
-        2.coerceAtMost(2.coerceAtLeast(AVAILABLE_PROCESSORS - UI_CORE_POOL_SIZE - HIGH_SERIAL_CORE_POOL_SIZE))
-    // -----------------------------------------------------------------------
-
+    private val CPU_CORE_POOL_SIZE = (AVAILABLE_PROCESSORS - 1)
+        .coerceAtLeast(2)
+        .coerceAtMost(4)
 
     init {
         Log.d(
             "Dispatcher",
-            "AVAILABLE_PROCESSORS:$AVAILABLE_PROCESSORS, IO_CORE_POOL_SIZE:$IO_CORE_POOL_SIZE, CPU_CORE_POOL_SIZE:$CPU_CORE_POOL_SIZE"
+            "CPU=$AVAILABLE_PROCESSORS, IO_CORE_POOL_SIZE=$IO_CORE_POOL_SIZE, CPU_CORE_POOL_SIZE=$CPU_CORE_POOL_SIZE"
         )
     }
+
+    // -----------------------------------------------------------------------
+    // UI Dispatcher
+    // -----------------------------------------------------------------------
 
     val UI: CoroutineDispatcher by lazy {
         Handler(Looper.getMainLooper()).asCoroutineDispatcher("ui")
     }
 
-    val highSerialHandler by lazy {
+    // -----------------------------------------------------------------------
+    // High-Serial 单线程序列化（核心场景）
+    // -----------------------------------------------------------------------
+
+    private val highSerialHandler: Handler by lazy {
         Handler(
             HandlerThread(
                 "high_serial_handle_thread",
@@ -66,25 +76,22 @@ object Dispatcher {
     fun runOnHighSerialThread(runnable: Runnable, delay: Long = 0L) {
         if (delay == 0L && Looper.myLooper() === highSerialHandler.looper) {
             runnable.run()
-            return
+        } else {
+            highSerialHandler.postDelayed(runnable, delay)
         }
-
-        highSerialHandler.postDelayed(runnable, delay)
     }
 
-    /**
-     * 从哪里run就行哪里remove，别remove错了！！！
-     */
     fun removeFromHighSerialThread(runnable: Runnable) {
         highSerialHandler.removeCallbacks(runnable)
     }
 
-    /**
-     * 高优先级 单线程序列化操作，核心场景使用（例如：语聊房）
-     */
     val HIGH_SERIAL: CoroutineDispatcher by lazy { highSerialHandler.asCoroutineDispatcher() }
 
-    private val lowSerialHandler by lazy {
+    // -----------------------------------------------------------------------
+    // Low-Serial 单线程序列化（非核心序列化）
+    // -----------------------------------------------------------------------
+
+    private val lowSerialHandler: Handler by lazy {
         Handler(
             HandlerThread(
                 "low_serial_handle_thread",
@@ -96,28 +103,21 @@ object Dispatcher {
     fun runOnLowSerialThread(runnable: Runnable, delay: Long = 0L) {
         if (delay == 0L && Looper.myLooper() === lowSerialHandler.looper) {
             runnable.run()
-            return
+        } else {
+            lowSerialHandler.postDelayed(runnable, delay)
         }
-
-        lowSerialHandler.postDelayed(runnable, delay)
     }
 
-    /**
-     * 从哪里run就行哪里remove，别remove错了！！！
-     */
     fun removeFromLowSerialThread(runnable: Runnable) {
         lowSerialHandler.removeCallbacks(runnable)
     }
 
-    /**
-     * 低优先级 单线程序列化操作，非核心序列化场景使用
-     */
     val LOW_SERIAL: CoroutineDispatcher by lazy { lowSerialHandler.asCoroutineDispatcher() }
 
-    /**
-     * 高优先级执行器，程序中尽量使用该执行器
-     * 核心线程数已通过 CPU_CORE_POOL_SIZE 限制为最大 2
-     */
+    // -----------------------------------------------------------------------
+    // 高优先级线程池（用于多数任务，CPU 限制最多 4）
+    // -----------------------------------------------------------------------
+
     val highExecutor: ExecutorService by lazy {
         Executors.newFixedThreadPool(
             CPU_CORE_POOL_SIZE,
@@ -127,42 +127,54 @@ object Dispatcher {
 
     val HIGH: CoroutineDispatcher by lazy { highExecutor.asCoroutineDispatcher() }
 
+    // -----------------------------------------------------------------------
+    // 低优先级 Backup（有限界队列 + 低优先级）
+    // -----------------------------------------------------------------------
+
     private val lowBackupExecutor by lazy {
         ThreadPoolExecutor(
-            IO_CORE_POOL_SIZE, // 核心线程数已限制为最大 2
-            IO_CORE_POOL_SIZE, // 最大线程数跟随核心线程数（已限制为最大 2）
+            IO_CORE_POOL_SIZE,
+            IO_CORE_POOL_SIZE,
             30,
             TimeUnit.SECONDS,
-            LinkedBlockingQueue(),
-            NamedThreadFactory("global-low-backup-thread", NORM_PRIORITY - 1)
+            LinkedBlockingQueue<Runnable>(2000), // 有界：防止内存爆炸
+            NamedThreadFactory("global-low-backup-thread", NORM_PRIORITY - 2)
         ).apply {
-            // 允许核心线程超时时关闭
             allowCoreThreadTimeOut(true)
         }
     }
 
-    /**
-     * 低优先级执行器，用于处理耗时&不高优任务，这类任务一定要使用它（参考AsyncTask设计）
-     */
+    // -----------------------------------------------------------------------
+    // 低优先级线程池 - 有界队列 + 回压策略（不会 OOM）
+    // -----------------------------------------------------------------------
+
     val lowExecutor by lazy {
         ThreadPoolExecutor(
-            // 优化点 3/3: 核心线程数设置为 2（取代硬编码的 1），保证基础并发，同时不超过最大限制
-            2,
-            20.coerceAtLeast(AVAILABLE_PROCESSORS), // 保持最大线程数不变
+            IO_CORE_POOL_SIZE,
+            (AVAILABLE_PROCESSORS * 2).coerceAtLeast(4),
             30,
             TimeUnit.SECONDS,
-            SynchronousQueue(),
-            NamedThreadFactory("global-low-thread", NORM_PRIORITY - 1)
-        ).apply {
-            rejectedExecutionHandler = RejectedExecutionHandler { r, _ ->
-                // As a last ditch fallback, run it on an executor with an unbounded queue.
-                // Create this executor lazily, hopefully almost never.
-                lowBackupExecutor.execute(r)
+            LinkedBlockingQueue<Runnable>(300), // 有界队列
+            NamedThreadFactory("global-low-thread", NORM_PRIORITY - 1),
+            RejectedExecutionHandler { r, executor ->
+                // 当 lowExecutor 饱和 → 先回压当前线程
+                try {
+                    r.run() // 回压策略（最安全）
+                } catch (e: Throwable) {
+                    // 如果依然失败 → 扔到 backup（backup 有界）
+                    lowBackupExecutor.execute(r)
+                }
             }
+        ).apply {
+            allowCoreThreadTimeOut(true)
         }
     }
 
     val LOW: CoroutineDispatcher by lazy { lowExecutor.asCoroutineDispatcher() }
+
+    // -----------------------------------------------------------------------
+    // Scheduled
+    // -----------------------------------------------------------------------
 
     val scheduledExecutor by lazy {
         Executors.newScheduledThreadPool(
@@ -171,16 +183,16 @@ object Dispatcher {
         )
     }
 
-    /**
-     * 如果在当前线程会立即执行，不想立即执行的情况使用post
-     */
+    // -----------------------------------------------------------------------
+    // Handler 扩展
+    // -----------------------------------------------------------------------
+
     fun Handler.submit(runnable: Runnable, delay: Long = 0L) {
         if (delay == 0L && Looper.myLooper() === looper) {
             runnable.run()
-            return
+        } else {
+            postDelayed(runnable, delay)
         }
-
-        postDelayed(runnable, delay)
     }
 
     fun Handler.remove(runnable: Runnable) {
