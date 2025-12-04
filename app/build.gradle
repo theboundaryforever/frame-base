@@ -4,7 +4,6 @@ plugins {
     id 'org.jetbrains.kotlin.kapt'
     id 'io.github.zzechao.glide-svga'
     id 'kotlin-kapt'
-    id 'com.didi.drouter'
 }
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
@@ -76,7 +75,7 @@ android {
         release {
             keyAlias 'key0'
             keyPassword '123456'
-            storeFile file('../key/keys.jks')
+            storeFile file('../key/key0')
             storePassword '123456'
             //添加V1 V2签名
             v1SigningEnabled true
@@ -85,7 +84,7 @@ android {
         debug {
             keyAlias 'key0'
             keyPassword '123456'
-            storeFile file('../key/keys.jks')
+            storeFile file('../key/key0')
             storePassword '123456'
             //添加V1 V2签名
             v1SigningEnabled true
@@ -148,12 +147,13 @@ dependencies {
     implementation libs.fragment.ktx
 
 
-    api project(':frame:network')
     api project(':frame:mvvm')
     api project(':frame:coroutine')
     api project(':frame:util')
     api project(':frame:media')
     api project(':frame:base')
+
+    implementation 'com.github.theboundaryforever.frame-base:base:v1.0.5-alpha2'
 
 
 }

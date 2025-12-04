@@ -10,7 +10,7 @@ import com.alibaba.sdk.android.oss.OSSClient
 import com.alibaba.sdk.android.oss.ServiceException
 import com.alibaba.sdk.android.oss.model.PutObjectRequest
 import com.alibaba.sdk.android.oss.model.PutObjectResult
-import com.yuehai.data.collection.path.Constants
+
 import com.yuehai.util.util.SignatureNewUtil
 import com.yuehai.util.util.SnowFlake
 import java.util.*
@@ -18,9 +18,11 @@ import java.util.*
 /**
  * 单张图片异步上传
  */
+
+const val ossbucket = "yoppo"
 fun OSSClient.uploadImageAsync(
     localPath: String,
-    ossBucket: String = Constants.ossbucket,
+    ossBucket: String = ossbucket,
     onSuccess: (ossUrl: String) -> Unit,
     onFinish: () -> Unit,
     onError: (Exception?) -> Unit
@@ -61,7 +63,7 @@ fun OSSClient.uploadImageAsync(
  */
 fun OSSClient.uploadImagesAsyncOrderedWithRetry(
     localPaths: List<String>,
-    ossBucket: String = Constants.ossbucket,
+    ossBucket: String = ossbucket,
     maxRetry: Int = 2,
     onEachSuccess: (ossUrl: String, index: Int) -> Unit = { _, _ -> },
     onAllSuccess: (ossUrls: List<String>) -> Unit = {},

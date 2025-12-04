@@ -43,6 +43,7 @@ eventbus = "3.1.1"
 retrofit = "2.9.0"
 multidex = "2.0.0"
 svgaplayer = "2.6.1"
+svgaplaye2 = "v1.0.2-alpha4"
 svgaplugin = "4.13.3"
 kprogresshud = "1.2.0"
 dialogX = "0.0.45"
@@ -167,7 +168,8 @@ eventbus = { group = "org.greenrobot", name = "eventbus", version.ref = "eventbu
 #multidex
 multidex = { group = "androidx.multidex", name = "multidex", version.ref = "multidex" }
 #svgaplayer
-svgaplayer = { group = "com.github.yyued", name = "SVGAPlayer-Android", version.ref = "svgaplayer" }
+#svgaplayer = { group = "com.github.yyued", name = "SVGAPlayer-Android", version.ref = "svgaplayer" }
+svgaplayer = { group = "com.github.theboundaryforever", name = "svgaplayer", version.ref = "svgaplaye2" }
 svgaplugin = { group = "com.github.YvesCheung", name = "SVGAGlidePlugin", version.ref = "svgaplugin" }
 #kprogresshud
 kprogresshud = { group = "com.kaopiz", name = "kprogresshud", version.ref = "kprogresshud" }
