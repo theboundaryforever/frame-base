@@ -14,12 +14,18 @@ buildscript {
     repositories {
         mavenCentral()
         maven { url "https://mirrors.tencent.com/nexus/repository/maven-public/" }
-        maven { url 'https://jitpack.io' } // 必须添加
+        maven { url 'https://jitpack.io'
+            credentials {
+                username "theboundaryforever"
+                password "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"
+            }
+        } 
         gradlePluginPortal()
         google()
         flatDir {
             dirs 'libs'  // 放 AAR 的文件夹
         }
+
     }
 }
 
