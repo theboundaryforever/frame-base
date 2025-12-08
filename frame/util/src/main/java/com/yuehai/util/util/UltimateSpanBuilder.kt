@@ -3,20 +3,11 @@ package com.yuehai.util.util
 import android.graphics.Typeface
 import android.text.SpannableStringBuilder
 import android.text.Spanned
-import android.text.style.*
-import android.view.View
 import android.text.TextPaint
 import android.text.method.LinkMovementMethod
+import android.text.style.*
+import android.view.View
 import android.widget.TextView
-import kotlin.apply
-import kotlin.collections.forEach
-import kotlin.collections.forEachIndexed
-import kotlin.let
-import kotlin.sequences.toList
-import kotlin.text.substring
-import kotlin.text.toRegex
-import kotlin.to
-
 
 object UltimateSpanBuilder {
 
@@ -37,8 +28,14 @@ object UltimateSpanBuilder {
             spans.add(AbsoluteSizeSpan(px, false))
         }
 
+        /** ✅ 修复加粗无效：使用 StyleSpan + FakeBold 双保险 */
         fun bold() = apply {
             spans.add(StyleSpan(Typeface.BOLD))
+            spans.add(object : CharacterStyle() {
+                override fun updateDrawState(tp: TextPaint) {
+                    tp.isFakeBoldText = true
+                }
+            })
         }
 
         fun italic() = apply {
@@ -59,7 +56,10 @@ object UltimateSpanBuilder {
             onClick: () -> Unit
         ) = apply {
             spans.add(object : ClickableSpan() {
-                override fun onClick(widget: View) = onClick()
+                override fun onClick(widget: View) {
+                    onClick()
+                }
+
                 override fun updateDrawState(ds: TextPaint) {
                     color?.let { ds.color = it }
                     ds.isUnderlineText = underline
@@ -104,10 +104,10 @@ object UltimateSpanBuilder {
 }
 
 /**
- * TextView 扩展函数：一行设置完毕
+ * TextView 扩展函数
  */
 fun TextView.setSpanText(format: String, vararg args: Pair<String, List<Any>>) {
     val result = UltimateSpanBuilder.build(format, *args)
     this.text = result
-    this.movementMethod = LinkMovementMethod.getInstance() // 若有点击 span
+    this.movementMethod = LinkMovementMethod.getInstance() // 支持点击 span
 }
