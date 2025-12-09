@@ -244,10 +244,19 @@ open class BaseDialogFragment(@LayoutRes open val layoutId: Int) : DialogFragmen
             super.onStart()
             isCancelable = cancelable
             setCanceledOnTouchOutside(canceledOnTouchOutside)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Log.d(TAG, "onStart exception, exception message = ${e.message}")
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        try {
             val dialog = dialog ?: return
             val window = dialog.window ?: return
             resetWindowAttributes(window)
-        } catch (e: Exception) {
+        }catch (e: Exception){
             e.printStackTrace()
             Log.d(TAG, "onStart exception, exception message = ${e.message}")
         }
