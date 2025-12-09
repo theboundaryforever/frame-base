@@ -28,6 +28,11 @@ abstract class BottomDialogFragment(@LayoutRes override val layoutId: Int) :
 
     override fun onStart() {
         super.onStart()
+
+    }
+
+    override fun onResume() {
+        super.onResume()
         setDialogAttributes(height)
     }
 
