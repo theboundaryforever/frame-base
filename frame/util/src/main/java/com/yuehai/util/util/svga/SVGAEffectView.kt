@@ -23,6 +23,11 @@ import com.yuehai.util.AppUtil
 import com.yuehai.util.util.DownloadListener
 import com.yuehai.util.util.OkDownloadExt
 import com.yuehai.util.util.download.MediaCacheManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 import org.libpag.PAGFile
 import org.libpag.PAGView
 import java.io.File
@@ -35,7 +40,6 @@ import java.util.concurrent.Executors
 
 private const val TAG = "AnimPlayExt"
 
-// ==================== SVGA Parser and Cache ====================
 val parser: SVGAParser by lazy {
     SVGAParser.shareParser().apply {
         init(AppUtil.appContext)
@@ -43,10 +47,9 @@ val parser: SVGAParser by lazy {
     }
 }
 
-// 【修正/优化】：使用单线程执行器，确保 SVGA 的解码任务是串行执行的，避免 OOM
 private val svgaDecodeExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
-private const val MAX_SVGA_CACHE_COUNT = 3 // 减小缓存数量，以节省内存
+private const val MAX_SVGA_CACHE_COUNT = 3
 
 private val svgaCache: LruCache<String, SVGAVideoEntity> =
     object : LruCache<String, SVGAVideoEntity>(MAX_SVGA_CACHE_COUNT) {}
@@ -58,9 +61,6 @@ private fun cacheSVGA(key: String, video: SVGAVideoEntity) {
     svgaCache.put(key, video)
 }
 
-/**
- * 统一的 SVGA 加载入口，处理缓存和并发。
- */
 private fun loadSVGA(
     key: String,
     decode: (SVGAParser.ParseCompletion) -> Unit,
@@ -90,14 +90,12 @@ private fun loadSVGA(
     }
 }
 
-// ==================== 回调接口 ====================
 interface PlayCallback {
     fun onPlayStart() {}
     fun onPlayComplete() {}
     fun onPlayFailed(error: String?) {}
 }
 
-// ==================== SVGA 播放核心逻辑 ====================
 private const val avatarKey = "key01"
 private const val nameKey = "key02"
 
@@ -122,7 +120,6 @@ private fun SVGAImageView.playCore(
         override fun onStep(frame: Int, percentage: Double) {}
     }
 
-    // 【修正 A】：在加载前设置 tag。用于在异步回调中验证 View 是否被重用。
     this.tag = key
 
     loadSVGA(key, { completion ->
@@ -149,20 +146,17 @@ private fun SVGAImageView.playCore(
         }
     }) { videoItem ->
         if (videoItem == null) {
-            this.tag = null // 加载失败，清除 tag 状态
+            this.tag = null
             callback?.onPlayFailed("SVGA decode failed for key: $key")
             return@loadSVGA
         }
 
         post {
-            // 【修正 B】：加载完成后，检查 tag 是否仍然匹配。
-            // tag 不匹配表示 View 已被重用，应立即退出。
             if (this.tag != key) {
                 Log.w(TAG, "SVGA load complete, but View tag changed. Skipping animation start.")
                 return@post
             }
 
-            // 确认停止旧动画，准备设置新动画
             stopAnimation()
 
             val dynamicEntity = SVGADynamicEntity().apply {
@@ -190,7 +184,6 @@ private fun SVGAImageView.playCore(
                             resource: Bitmap,
                             transition: Transition<in Bitmap>?
                         ) {
-                            // 再次检查 tag，防止 Glide 异步返回期间 View 被重用
                             if (this@playCore.tag != key) return
 
                             dynamicEntity.setDynamicImage(resource, avatarKey)
@@ -222,8 +215,6 @@ private fun SVGAImageView.playCore(
     }
 }
 
-// ==================== SVGA 播放入口 (未移除) ====================
-
 fun SVGAImageView.playSVGA(
     url: String,
     loop: Int = 1,
@@ -238,11 +229,15 @@ fun SVGAImageView.playSVGA(
     } else {
         OkDownloadExt.downloadSingle(url, listener = object : DownloadListener {
             override fun onComplete(file: File) {
-                playCore(file.absolutePath, loop, null, null, callback, isLocalFile = true)
+                this@playSVGA.post {
+                    playCore(file.absolutePath, loop, null, null, callback, isLocalFile = true)
+                }
             }
 
             override fun onFailed(error: Throwable?) {
-                callback?.onPlayFailed(error?.message)
+                this@playSVGA.post {
+                    callback?.onPlayFailed(error?.message)
+                }
             }
         })
     }
@@ -264,11 +259,15 @@ fun SVGAImageView.playSVGAWithKey(
     } else {
         OkDownloadExt.downloadSingle(url, listener = object : DownloadListener {
             override fun onComplete(file: File) {
-                playCore(file.absolutePath, loop, avatarUrl, nickName, callback, isLocalFile = true)
+                this@playSVGAWithKey.post {
+                    playCore(file.absolutePath, loop, avatarUrl, nickName, callback, isLocalFile = true)
+                }
             }
 
             override fun onFailed(error: Throwable?) {
-                callback?.onPlayFailed(error?.message)
+                this@playSVGAWithKey.post {
+                    callback?.onPlayFailed(error?.message)
+                }
             }
         })
     }
@@ -323,7 +322,6 @@ fun SVGAImageView.playSVGAWithKeyFromInternet(
     playCore(url, loop, avatarUrl, nickName, callback)
 }
 
-// ==================== PAG 播放 (未移除) ====================
 fun PAGView.playPGA(url: String, callback: PlayCallback? = null) {
     if (url.isEmpty()) {
         callback?.onPlayFailed("PAG URL is empty")
@@ -331,15 +329,21 @@ fun PAGView.playPGA(url: String, callback: PlayCallback? = null) {
     }
     val cacheFile = MediaCacheManager.getPagCacheFile(AppUtil.appContext, url)
     if (cacheFile.exists()) {
-        playPAGInternal(cacheFile, callback)
+        this.post {
+            playPAGInternal(cacheFile, callback)
+        }
     } else {
         OkDownloadExt.downloadSingle(url, listener = object : DownloadListener {
             override fun onComplete(file: File) {
-                playPAGInternal(file, callback)
+                this@playPGA.post {
+                    playPAGInternal(file, callback)
+                }
             }
 
             override fun onFailed(error: Throwable?) {
-                callback?.onPlayFailed(error?.message)
+                this@playPGA.post {
+                    callback?.onPlayFailed(error?.message)
+                }
             }
         })
     }
@@ -370,7 +374,6 @@ private fun PAGView.playPAGInternal(file: File, callback: PlayCallback?) {
 }
 
 
-// ==================== VAP (MP4) 播放 (未移除) ====================
 fun AnimView.checkMp4Cache(
     giftMp4Url: String,
     loop: Int = 1,
@@ -385,11 +388,14 @@ fun AnimView.checkMp4Cache(
     }
     val targetFile = MediaCacheManager.getVapMp4CacheFile(AppUtil.appContext, giftMp4Url)
     if (targetFile.exists() && targetFile.length() > 0) {
-        playMP4(targetFile, loop, nickName, avatarUrl, avatarUrl2, callback)
+        this.post {
+            playMP4(targetFile, loop, nickName, avatarUrl, avatarUrl2, callback)
+        }
     } else {
         startDownLoadFile(giftMp4Url, targetFile, loop, nickName, avatarUrl, avatarUrl2, callback)
     }
 }
+
 
 private fun AnimView.startDownLoadFile(
     url: String,
@@ -402,11 +408,15 @@ private fun AnimView.startDownLoadFile(
 ) {
     OkDownloadExt.downloadSingle(url, listener = object : DownloadListener {
         override fun onComplete(file: File) {
-            playMP4(file, loop, nickName, avatarUrl, avatarUrl2, callback)
+            this@startDownLoadFile.post {
+                playMP4(file, loop, nickName, avatarUrl, avatarUrl2, callback)
+            }
         }
 
         override fun onFailed(error: Throwable?) {
-            callback?.onPlayFailed(error?.message)
+            this@startDownLoadFile.post {
+                callback?.onPlayFailed(error?.message)
+            }
         }
     })
 }

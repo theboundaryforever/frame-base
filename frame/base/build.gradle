@@ -45,6 +45,7 @@ dependencies {
     implementation libs.qmui
     implementation libs.svgaplayer
     implementation libs.kprogresshud
+    implementation libs.vap
     api project(':frame:coroutine')
     api project(':frame:mvvm')
     api project(':frame:util')
