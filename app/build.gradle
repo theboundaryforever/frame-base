@@ -145,7 +145,7 @@ dependencies {
     androidTestImplementation libs.androidx.junit
     androidTestImplementation libs.androidx.espresso.core
     implementation libs.fragment.ktx
-
+implementation libs.vap
 
     api project(':frame:mvvm')
     api project(':frame:coroutine')
@@ -153,7 +153,7 @@ dependencies {
     api project(':frame:media')
     api project(':frame:base')
 
-    implementation 'com.github.theboundaryforever.frame-base:base:v1.0.5-alpha2'
+    implementation 'com.github.theboundaryforever.frame-base:base:v1.0.6-alpha8'
 
 
 }

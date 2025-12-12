@@ -421,62 +421,77 @@ private fun AnimView.playMP4(
 ) {
     setLoop(loop)
     setFetchResource(object : IFetchResource {
+
         override fun fetchImage(resource: Resource, result: (Bitmap?) -> Unit) {
+
             if (resource.tag == "tag1" && !avatar.isNullOrEmpty()) {
+
                 Glide.with(context)
                     .asBitmap()
                     .load(avatar)
                     .into(object : CustomTarget<Bitmap>() {
+
                         override fun onResourceReady(
                             resource: Bitmap,
                             transition: Transition<in Bitmap>?
                         ) {
-                            result(resource)
+                            // ⭐ 修复线程异常
+                            this@playMP4.post { result(resource) }
                         }
 
                         override fun onLoadCleared(placeholder: android.graphics.drawable.Drawable?) {
-                            result(null)
+                            this@playMP4.post { result(null) }
                         }
 
                         override fun onLoadFailed(errorDrawable: android.graphics.drawable.Drawable?) {
-                            result(null)
+                            this@playMP4.post { result(null) }
                         }
                     })
+
             } else if (resource.tag == "tag2" && !avatarUrl2.isNullOrEmpty()) {
+
                 Glide.with(context)
                     .asBitmap()
                     .load(avatar)
                     .into(object : CustomTarget<Bitmap>() {
+
                         override fun onResourceReady(
                             resource: Bitmap,
                             transition: Transition<in Bitmap>?
                         ) {
-                            result(resource)
+                            // ⭐ 修复线程异常
+                            this@playMP4.post { result(resource) }
                         }
 
                         override fun onLoadCleared(placeholder: android.graphics.drawable.Drawable?) {
-                            result(null)
+                            this@playMP4.post { result(null) }
                         }
 
                         override fun onLoadFailed(errorDrawable: android.graphics.drawable.Drawable?) {
-                            result(null)
+                            this@playMP4.post { result(null) }
                         }
                     })
+
             } else {
-                result(null)
+                // ⭐ 修复线程异常
+                this@playMP4.post { result(null) }
             }
         }
 
         override fun fetchText(resource: Resource, result: (String?) -> Unit) {
-            if (resource.tag == "tag2" || resource.tag == "tag3") {
-                result(nickName ?: "")
-            } else {
-                result(null)
+            // ⭐ fetchText 没有线程保证，也必须切到主线程
+            this@playMP4.post {
+                if (resource.tag == "tag2" || resource.tag == "tag3") {
+                    result(nickName ?: "")
+                } else {
+                    result(null)
+                }
             }
         }
 
         override fun releaseResource(resources: List<Resource>) {}
     })
+
     setAnimListener(object : IAnimListener {
         override fun onVideoStart() {
             callback?.onPlayStart()
@@ -493,5 +508,6 @@ private fun AnimView.playMP4(
         override fun onVideoDestroy() {}
         override fun onVideoRender(frameIndex: Int, config: AnimConfig?) {}
     })
+
     startPlay(file)
 }
