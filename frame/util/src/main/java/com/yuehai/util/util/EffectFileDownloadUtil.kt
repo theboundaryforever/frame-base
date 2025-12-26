@@ -14,12 +14,11 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.lang.ref.WeakReference
 import java.security.MessageDigest
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.max
 import kotlin.math.min
 
 interface DownloadListener {
@@ -31,26 +30,29 @@ interface DownloadListener {
 object OkDownloadExt {
 
     private const val TAG = "OkDownloadExt"
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    private val downloadQueue = ConcurrentLinkedQueue<DownloadItem>()
-    private val downloadingTasks = ConcurrentHashMap<String, Job>()
-    private val callbackMap = ConcurrentHashMap<String, CopyOnWriteArrayList<DownloadListener>>()
-    private val retryCountMap = ConcurrentHashMap<String, Int>()
-    private val pausedSet: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap())
-
     private const val MAX_PARALLEL_DOWNLOAD = 10
-    private val currentParallel = AtomicInteger(0)
     private const val MAX_RETRY = 3
-    private const val DEFAULT_BLOCK_SIZE = 1024L * 1024L // 1MB
+    private const val SMALL_FILE_THRESHOLD = 200 * 1024L
+    private const val PROGRESS_SAVE_BYTES = 512 * 1024L
+    private const val PROGRESS_SAVE_INTERVAL = 500L
 
-    private val queueMutex = Mutex()
+    private val SAFE_EXTENSIONS = setOf("svga", "mp4", "gif", "png", "jpg", "jpeg", "webp")
 
-    private val client = OkHttpClient.Builder()
-        .retryOnConnectionFailure(true)
-        .build()
-
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private val globalMutex = Mutex()
+
+    private val downloadQueue = mutableListOf<DownloadItem>()
+    private val waitingSet = mutableSetOf<String>()
+    private val downloadingTasks = mutableMapOf<String, Job>()
+    private var runningCount = 0
+
+    private val retryCountMap = ConcurrentHashMap<String, Int>()
+    private val pausedSet = Collections.newSetFromMap<String>(ConcurrentHashMap())
+    private val callbackMap = ConcurrentHashMap<String, MutableList<WeakReference<DownloadListener>>>()
+
+    private val client = OkHttpClient.Builder().retryOnConnectionFailure(true).build()
 
     data class DownloadItem(
         val url: String,
@@ -60,94 +62,322 @@ object OkDownloadExt {
         val md5: String? = null
     )
 
-    private fun getPriority(url: String): Int = when {
-        url.endsWith(".svga") || url.endsWith(".gif") -> 10
-        url.endsWith(".png") || url.endsWith(".jpg") -> 5
-        url.endsWith(".mp4") -> 1
-        else -> 3
-    }
+    /* ===================== API ===================== */
 
-    fun downloadSingle(
-        url: String,
-        targetDir: File = MediaCacheManager.defaultDir,
-        listener: DownloadListener? = null,
-        md5: String? = null
-    ) {
+    fun downloadSingle(url: String, targetDir: File = MediaCacheManager.defaultDir, listener: DownloadListener? = null, md5: String? = null) {
         if (url.isEmpty()) return
+        Log.d(TAG, "add task: $url, priority: ${getPriority(url)}")
+        addCallback(url, listener)
 
-        addDownloadCallback(url, listener)
-
-        if (downloadQueue.any { it.url == url } || downloadingTasks.containsKey(url)) {
-            Log.d(TAG, "[downloadSingle] Already in queue or downloading: $url")
-            startQueueIfNeeded()
-            return
-        }
-
-        val item = DownloadItem(url, targetDir, listener, getPriority(url), md5)
-        downloadQueue.offer(item)
-        Log.d(TAG, "[downloadSingle] Added to queue: $url")
-        startQueueIfNeeded()
-    }
-
-
-    fun downloadMultiple(urls: List<String>, targetDir: File = MediaCacheManager.defaultDir) {
-        urls.forEach { downloadSingle(it, targetDir) }
-    }
-
-    fun pause(url: String) {
-        pausedSet.add(url)
-        downloadingTasks[url]?.cancel()
-        Log.d(TAG, "[pause] Paused: $url")
-    }
-
-    fun resume(url: String) {
-        if (pausedSet.remove(url)) {
-            val file = getTargetFile(url, MediaCacheManager.defaultDir)
-            val tmpFile = File(file.absolutePath + ".part")
-            if (tmpFile.exists()) {
-                downloadQueue.offer(
-                    DownloadItem(
-                        url,
-                        MediaCacheManager.defaultDir,
-                        null,
-                        getPriority(url)
-                    )
-                )
-                Log.d(TAG, "[resume] Resumed: $url")
-                startQueueIfNeeded()
-            } else {
-                downloadSingle(url, MediaCacheManager.defaultDir, null)
+        scope.launch {
+            globalMutex.withLock {
+                if (waitingSet.contains(url) || downloadingTasks.containsKey(url)) {
+                    Log.i(TAG, "task already exists in queue/running: $url")
+                    startNextLocked()
+                    return@withLock
+                }
+                waitingSet.add(url)
+                downloadQueue.add(DownloadItem(url, targetDir, listener, getPriority(url), md5))
+                downloadQueue.sortByDescending { it.priority }
+                startNextLocked()
             }
         }
     }
 
+    fun pause(url: String) {
+        Log.i(TAG, "pause task: $url")
+        pausedSet.add(url)
+        scope.launch {
+            globalMutex.withLock {
+                if (waitingSet.remove(url)) {
+                    downloadQueue.removeAll { it.url == url }
+                }
+                stopRunningTaskLocked(url)
+            }
+        }
+    }
+
+    fun resume(url: String) {
+        Log.i(TAG, "resume task: $url")
+        if (pausedSet.remove(url)) downloadSingle(url)
+    }
 
     fun cancel(url: String) {
+        Log.w(TAG, "cancel task: $url")
         pausedSet.remove(url)
-        downloadingTasks[url]?.cancel()
-        downloadingTasks.remove(url)
-        callbackMap.remove(url)
         retryCountMap.remove(url)
+        callbackMap.remove(url)
+        scope.launch {
+            globalMutex.withLock {
+                if (waitingSet.remove(url)) {
+                    downloadQueue.removeAll { it.url == url }
+                }
+                stopRunningTaskLocked(url)
+            }
+        }
+        val file = getTargetFile(url, MediaCacheManager.defaultDir)
+        File(file.absolutePath + ".part").delete()
+        File(file.absolutePath + ".cfg").delete()
+        file.delete()
+    }
 
-        val iter = downloadQueue.iterator()
-        while (iter.hasNext()) {
-            if (iter.next().url == url) iter.remove()
+    /* ===================== 调度内核 ===================== */
+
+    private fun startNextLocked() {
+        Log.v(TAG, "check schedule: running=$runningCount, waiting=${downloadQueue.size}")
+        while (runningCount < MAX_PARALLEL_DOWNLOAD && downloadQueue.isNotEmpty()) {
+            val item = downloadQueue.removeAt(0)
+            waitingSet.remove(item.url)
+
+            if (pausedSet.contains(item.url)) {
+                Log.d(TAG, "skip paused task in queue: ${item.url}")
+                continue
+            }
+            launchTaskLocked(item)
+        }
+    }
+
+    private fun launchTaskLocked(item: DownloadItem) {
+        runningCount++
+        Log.i(TAG, "🚀 launch task: ${item.url} (runningCount=$runningCount)")
+        val job = scope.launch {
+            try {
+                yield()
+                val file = getTargetFile(item.url, item.targetDir)
+                if (file.exists() && file.length() > 0) {
+                    if (item.md5 == null || calculateMD5(file).equals(item.md5, true)) {
+                        Log.d(TAG, "file already exists and valid: ${item.url}")
+                        dispatchComplete(item.url, file)
+                        return@launch
+                    } else {
+                        Log.w(TAG, "MD5 mismatch for existing file, re-downloading: ${item.url}")
+                        file.delete()
+                    }
+                }
+
+                if (downloadWithRetry(item, file)) {
+                    dispatchComplete(item.url, file)
+                } else {
+                    Log.e(TAG, "task failed after all retries: ${item.url}")
+                    dispatchFail(item.url, IOException("Max retries reached"))
+                }
+
+            } catch (e: Exception) {
+                if (e is CancellationException) {
+                    Log.d(TAG, "task coroutine cancelled: ${item.url}")
+                } else {
+                    Log.e(TAG, "task exception: ${item.url}", e)
+                    dispatchFail(item.url, e)
+                }
+            } finally {
+                globalMutex.withLock {
+                    if (downloadingTasks.remove(item.url) != null) {
+                        runningCount = max(0, runningCount - 1)
+                        Log.d(TAG, "task finished and slot released: ${item.url} (runningCount=$runningCount)")
+                    }
+                    startNextLocked()
+                }
+            }
+        }
+        downloadingTasks[item.url] = job
+    }
+
+    private fun stopRunningTaskLocked(url: String) {
+        val job = downloadingTasks[url]
+        if (job != null) {
+            job.cancel()
+            downloadingTasks.remove(url)
+            runningCount = max(0, runningCount - 1)
+            Log.d(TAG, "force stopped running task: $url (runningCount=$runningCount)")
+            startNextLocked()
+        }
+    }
+
+    /* ===================== 网络与IO ===================== */
+
+    private suspend fun downloadWithRetry(item: DownloadItem, file: File): Boolean {
+        var retry = retryCountMap[item.url] ?: 0
+        while (retry < MAX_RETRY) {
+            try {
+                processDownload(item.url, file)
+                if (item.md5 != null && !calculateMD5(file).equals(item.md5, true)) {
+                    file.delete()
+                    throw IOException("MD5 mismatch after download")
+                }
+                retryCountMap.remove(item.url)
+                return true
+            } catch (e: Exception) {
+                if (e is CancellationException || pausedSet.contains(item.url)) {
+                    Log.d(TAG, "stop retry due to pause/cancel: ${item.url}")
+                    return false
+                }
+                retry++
+                retryCountMap[item.url] = retry
+                Log.w(TAG, "retry task ($retry/$MAX_RETRY): ${item.url} cause: ${e.message}")
+                delay(1000L * retry)
+            }
+        }
+        return false
+    }
+
+    private suspend fun processDownload(url: String, file: File) = withContext(Dispatchers.IO) {
+        val tmpFile = File(file.absolutePath + ".part")
+        val cfgFile = File(file.absolutePath + ".cfg")
+
+        var startBytes = 0L
+        if (cfgFile.exists() && tmpFile.exists()) {
+            startBytes = cfgFile.readText().toLongOrNull() ?: 0L
+            if (startBytes > tmpFile.length()) startBytes = tmpFile.length()
+            Log.d(TAG, "resume download from: $startBytes bytes, url: $url")
+        } else {
+            tmpFile.delete()
+            cfgFile.delete()
         }
 
-        val file = getTargetFile(url, MediaCacheManager.defaultDir)
-        val tmpFile = File(file.absolutePath + ".part")
-        tmpFile.delete()
-        file.delete()
-        Log.d(TAG, "[cancel] Cancelled and deleted: $url")
+        val request = Request.Builder().url(url)
+            .apply { if (startBytes > 0) addHeader("Range", "bytes=$startBytes-") }.build()
+
+        client.newCall(request).execute().use { resp ->
+            val isPartial = resp.code == 206
+            if (!resp.isSuccessful && !isPartial) throw IOException("HTTP ${resp.code}")
+            val body = resp.body ?: throw IOException("Empty body")
+            val contentLen = body.contentLength()
+            val totalLength = if (isPartial) startBytes + contentLen else contentLen
+
+            Log.i(TAG, "connection success: $url, totalSize: $totalLength, isPartial: $isPartial")
+
+            if (contentLen > 0 && !ensureSpace(file.parentFile!!, contentLen)) {
+                throw IOException("No space left on device after eviction")
+            }
+
+            var lastDisplayProgress = if (totalLength > 0) (startBytes * 100 / totalLength).toInt() else 0
+            RandomAccessFile(tmpFile, "rw").use { raf ->
+                val offset = if (isPartial) startBytes else 0L
+                raf.seek(offset)
+                val buf = ByteArray(16 * 1024)
+                var downloaded = offset
+                var lastSaveTime = System.currentTimeMillis()
+                var lastSaveBytes = downloaded
+
+                body.byteStream().use { input ->
+                    var len: Int
+                    while (input.read(buf).also { len = it } != -1) {
+                        if (pausedSet.contains(url)) throw CancellationException()
+                        raf.write(buf, 0, len)
+                        downloaded += len
+
+                        val now = System.currentTimeMillis()
+                        if (now - lastSaveTime >= 200L) { // 稍微降低日志频率
+                            val cur = if (totalLength > 0) (downloaded * 100 / totalLength).toInt() else 0
+                            lastDisplayProgress = max(lastDisplayProgress, cur)
+                            dispatchProgress(url, lastDisplayProgress)
+                        }
+                        if (totalLength > SMALL_FILE_THRESHOLD && (downloaded - lastSaveBytes >= PROGRESS_SAVE_BYTES || now - lastSaveTime >= PROGRESS_SAVE_INTERVAL)) {
+                            cfgFile.writeText(downloaded.toString())
+                            lastSaveBytes = downloaded
+                            lastSaveTime = now
+                        }
+                    }
+                }
+            }
+            if (!tmpFile.renameTo(file)) throw IOException("Rename error")
+            cfgFile.delete()
+            Log.i(TAG, "download success: $url -> ${file.absolutePath}")
+        }
     }
 
+    /* ===================== 磁盘清理逻辑 ===================== */
 
-    private fun addDownloadCallback(url: String, listener: DownloadListener?) {
+    private suspend fun ensureSpace(dir: File, requiredSize: Long): Boolean {
+        val available = getAvailableSpace(dir)
+        if (available >= requiredSize) return true
+
+        Log.w(TAG, "low space: required $requiredSize, available $available. triggering eviction...")
+        evictOldCaches(dir, requiredSize)
+
+        val finalAvailable = getAvailableSpace(dir)
+        val success = finalAvailable >= requiredSize
+        if (!success) Log.e(TAG, "still no space after eviction! available: $finalAvailable")
+        return success
+    }
+
+    private suspend fun evictOldCaches(dir: File, neededBytes: Long) = withContext(Dispatchers.IO) {
+        try {
+            val files = dir.listFiles { f ->
+                f.isFile && !f.name.endsWith(".part") && !f.name.endsWith(".cfg") &&
+                        SAFE_EXTENSIONS.contains(f.extension.lowercase())
+            } ?: return@withContext
+
+            yield()
+            val sortedFiles = files.sortedBy { it.lastModified() }
+            Log.d(TAG, "found ${sortedFiles.size} candidate files for eviction")
+
+            var freedTotal = 0L
+            for (file in sortedFiles) {
+                ensureActive()
+                val size = file.length()
+                if (file.delete()) {
+                    freedTotal += size
+                    Log.v(TAG, "deleted old cache file: ${file.name}, freed: $size")
+                    if (getAvailableSpace(dir) >= neededBytes) break
+                }
+                yield()
+            }
+            Log.i(TAG, "eviction finished. total freed: $freedTotal bytes")
+        } catch (e: Exception) {
+            if (e !is CancellationException) Log.e(TAG, "eviction error", e)
+        }
+    }
+
+    private fun getAvailableSpace(dir: File): Long {
+        return try {
+            val stat = StatFs(dir.path)
+            stat.availableBlocksLong * stat.blockSizeLong
+        } catch (e: Exception) { 0L }
+    }
+
+    /* ===================== 工具方法 ===================== */
+
+    private fun addCallback(url: String, listener: DownloadListener?) {
         if (listener == null) return
-        val list = callbackMap.getOrPut(url) { CopyOnWriteArrayList() }
-        if (!list.contains(listener)) list.add(listener)
-        Log.d(TAG, "[addDownloadCallback] $url callbacks=${list.size}")
+        val list = callbackMap.getOrPut(url) { Collections.synchronizedList(mutableListOf()) }
+        list.add(WeakReference(listener))
     }
+
+    private fun dispatchProgress(url: String, progress: Int) {
+        mainHandler.post {
+            callbackMap[url]?.iterator()?.let { iter ->
+                while (iter.hasNext()) {
+                    val l = iter.next().get()
+                    if (l == null) iter.remove() else l.onProgress(progress)
+                }
+            }
+        }
+    }
+
+    private fun dispatchComplete(url: String, file: File) {
+        mainHandler.post {
+            callbackMap[url]?.forEach { it.get()?.onComplete(file) }
+            callbackMap.remove(url)
+        }
+    }
+
+    private fun dispatchFail(url: String, e: Throwable?) {
+        mainHandler.post {
+            callbackMap[url]?.forEach { it.get()?.onFailed(e) }
+            callbackMap.remove(url)
+        }
+    }
+
+    private fun calculateMD5(file: File): String? = try {
+        val md = MessageDigest.getInstance("MD5")
+        file.inputStream().use { input ->
+            val buf = ByteArray(8192)
+            var len: Int
+            while (input.read(buf).also { len = it } != -1) md.update(buf, 0, len)
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) { null }
 
     private fun getTargetFile(url: String, targetDir: File): File = when {
         url.endsWith(".svga") -> MediaCacheManager.getSVGACacheFile(AppUtil.appContext, url)
@@ -155,285 +385,10 @@ object OkDownloadExt {
         else -> File(targetDir, url.substringAfterLast("/"))
     }
 
-    private fun startQueueIfNeeded() {
-        scope.launch {
-            queueMutex.withLock {
-                if (currentParallel.get() < MAX_PARALLEL_DOWNLOAD) {
-                    val nextItem = downloadQueue.poll() ?: return@withLock
-                    if (pausedSet.contains(nextItem.url)) {
-                        downloadQueue.offer(nextItem)
-                        startQueueIfNeeded()
-                        return@withLock
-                    }
-                    Log.d(
-                        TAG,
-                        "[startQueueIfNeeded] Starting: ${nextItem.url}, Queue size=${downloadQueue.size}"
-                    )
-                    startDownload(nextItem)
-                }
-            }
-        }
-    }
-
-    private fun startDownload(item: DownloadItem) {
-        val file = getTargetFile(item.url, item.targetDir)
-
-        if (file.exists() && file.length() > 0) {
-            if (item.md5 != null) {
-                scope.launch(Dispatchers.Default) {
-                    val fileMD5 = calculateMD5(file)
-                    if (fileMD5 != null && fileMD5.equals(item.md5, true)) {
-                        mainHandler.post { item.listener?.onComplete(file) }
-                        startQueueIfNeeded()
-                        return@launch
-                    } else {
-                        Log.e(TAG, "[startDownload] MD5 mismatch, redownloading: ${item.url}")
-                        file.delete()
-                        launchDownload(item, file)
-                    }
-                }
-            } else {
-                mainHandler.post { item.listener?.onComplete(file) }
-                startQueueIfNeeded()
-            }
-            return
-        }
-        launchDownload(item, file)
-    }
-
-    private fun launchDownload(item: DownloadItem, file: File) {
-        currentParallel.incrementAndGet()
-        Log.d(
-            TAG,
-            "[startDownload] Downloading: ${item.url}, currentParallel=${currentParallel.get()}"
-        )
-
-        val job = scope.launch {
-            try {
-                val headResp = client.newCall(Request.Builder().url(item.url).head().build()).execute()
-                val contentLength = headResp.header("Content-Length")?.toLongOrNull() ?: -1
-                val acceptRanges = headResp.header("Accept-Ranges")?.contains("bytes") == true
-                headResp.close()
-
-                if (contentLength > 0 && !hasEnoughSpace(item.targetDir, contentLength)) {
-                    Log.e(TAG, "[launchDownload] Not enough disk space for ${item.url}")
-                    throw IOException("Not enough disk space")
-                }
-
-                val success = downloadWithRetry(item, file, contentLength, acceptRanges)
-                val callbacks = callbackMap[item.url]
-                mainHandler.post {
-                    if (success) callbacks?.forEach { it.onComplete(file) }
-                    else callbacks?.forEach { it.onFailed(IOException("Download failed after retries")) }
-                }
-            } catch (e: Exception) {
-                val callbacks = callbackMap[item.url]
-                mainHandler.post { callbacks?.forEach { it.onFailed(e) } }
-            } finally {
-                downloadingTasks.remove(item.url)
-                currentParallel.decrementAndGet()
-                startQueueIfNeeded()
-            }
-        }
-
-        downloadingTasks[item.url] = job
-    }
-
-    private suspend fun downloadWithRetry(item: DownloadItem, file: File, contentLength: Long, acceptRanges: Boolean): Boolean {
-        var count = retryCountMap[item.url] ?: 0
-        while (count < MAX_RETRY) {
-            try {
-                downloadFile(item.url, file, item.listener, contentLength, acceptRanges)
-                if (item.md5 != null) {
-                    val fileMD5 = withContext(Dispatchers.Default) { calculateMD5(file) }
-                    if (fileMD5 == null || !fileMD5.equals(item.md5, true)) {
-                        Log.e(TAG, "[downloadWithRetry] MD5 mismatch: ${item.url}")
-                        file.delete()
-                        throw IOException("MD5 mismatch")
-                    }
-                }
-                retryCountMap.remove(item.url)
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "[downloadWithRetry] failed url=${item.url}, count=$count", e)
-                count++
-                retryCountMap[item.url] = count
-                if (pausedSet.contains(item.url)) {
-                    Log.d(TAG, "[downloadWithRetry] Task paused: ${item.url}")
-                    return false
-                }
-            }
-        }
-        retryCountMap.remove(item.url)
-        file.delete()
-        return false
-    }
-
-    private suspend fun downloadFile(url: String, file: File, listener: DownloadListener?, contentLength: Long, acceptRanges: Boolean) =
-        withContext(Dispatchers.IO) {
-            if (contentLength <= 0 || !acceptRanges) {
-                downloadSingleThread(url, file, listener, contentLength)
-                return@withContext
-            }
-
-            val tmpFile = File(file.absolutePath + ".part")
-            val currentFileLength = if (tmpFile.exists()) tmpFile.length() else 0L
-
-            if (currentFileLength >= contentLength) {
-                Log.d(TAG, "[downloadFile] File already complete: $url")
-                tmpFile.renameTo(file)
-                mainHandler.post { listener?.onProgress(200) }
-                return@withContext
-            }
-
-            val threadCount = if (contentLength < 10L * 1024L * 1024L) 1 else 6
-            val blockSize = contentLength / threadCount
-            Log.d(
-                TAG,
-                "[downloadFile] URL=$url, blockSize=$blockSize, currentLength=$currentFileLength, threadCount=$threadCount"
-            )
-
-            if (currentFileLength == 0L) {
-                RandomAccessFile(tmpFile, "rw").use { it.setLength(contentLength) }
-            }
-
-            val progressMap = LongArray(threadCount) { 0L }
-
-            coroutineScope {
-                (0 until threadCount).map { i ->
-                    async {
-                        val start = i * blockSize
-                        val end =
-                            if (i == threadCount - 1) contentLength - 1 else (start + blockSize - 1)
-
-                        val blockDownloaded = if (currentFileLength > 0) {
-                            min(end + 1, currentFileLength) - start
-                        } else 0L
-
-                        if (blockDownloaded >= (end - start + 1)) {
-                            progressMap[i] = blockDownloaded
-                            Log.d(TAG, "[downloadFile] Block $i already finished, skip.")
-                            return@async
-                        }
-
-                        val rangeStart = start + blockDownloaded
-                        Log.d(TAG, "[downloadFile] Block $i, start=$rangeStart, end=$end")
-                        val req =
-                            Request.Builder().url(url).addHeader("Range", "bytes=$rangeStart-$end")
-                                .build()
-                        client.newCall(req).execute().use { resp ->
-                            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-                            val body = resp.body ?: throw IOException("Empty body")
-                            body.byteStream().use { input ->
-                                RandomAccessFile(tmpFile, "rw").use { accessFile ->
-                                    accessFile.seek(rangeStart)
-                                    val buf = ByteArray(16384)
-                                    var len: Int
-                                    var totalRead = blockDownloaded
-                                    try {
-                                        while (input.read(buf).also { len = it } != -1) {
-                                            if (pausedSet.contains(url)) throw CancellationException()
-                                            accessFile.write(buf, 0, len)
-                                            totalRead += len
-                                            progressMap[i] = totalRead - start
-                                            val total = progressMap.sum()
-                                            val progress =
-                                                min(100, ((total * 100) / contentLength).toInt())
-                                            mainHandler.post { listener?.onProgress(progress) }
-                                        }
-                                    } catch (e: IOException) {
-                                        throw e
-                                    }
-                                    Log.d(
-                                        TAG,
-                                        "[downloadFile] Block $i finished, totalRead=$totalRead"
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }.awaitAll()
-            }
-
-            if (tmpFile.length() != contentLength) {
-                throw IOException("File incomplete")
-            }
-
-            tmpFile.renameTo(file)
-            mainHandler.post { listener?.onProgress(100) }
-        }
-
-
-    private fun downloadSingleThread(url: String, file: File, listener: DownloadListener?, contentLength: Long) {
-        val tmpFile = File(file.absolutePath + ".part")
-        val currentFileLength = if (tmpFile.exists()) tmpFile.length() else 0L
-        val reqBuilder = Request.Builder().url(url)
-        if (currentFileLength > 0) {
-            reqBuilder.addHeader("Range", "bytes=$currentFileLength-")
-        }
-
-        client.newCall(reqBuilder.build()).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-            val body = resp.body ?: throw IOException("Empty body")
-            val totalLength = if (contentLength > 0) {
-                contentLength
-            } else if (resp.header("Content-Length") != null) {
-                currentFileLength + (resp.header("Content-Length")?.toLongOrNull() ?: 0L)
-            } else -1L
-
-            var downloaded = currentFileLength
-            body.byteStream().use { input ->
-                RandomAccessFile(tmpFile, "rw").use { accessFile ->
-                    accessFile.seek(currentFileLength)
-                    val buf = ByteArray(8192)
-                    var len: Int
-                    try {
-                        while (input.read(buf).also { len = it } != -1) {
-                            if (pausedSet.contains(url)) throw CancellationException()
-                            accessFile.write(buf, 0, len)
-                            downloaded += len
-                            val progress = if (totalLength > 0) min(
-                                100,
-                                ((downloaded * 100) / totalLength).toInt()
-                            ) else 0
-                            mainHandler.post { listener?.onProgress(progress) }
-                        }
-                    } catch (e: IOException) {
-                        throw e
-                    }
-                }
-            }
-            if (totalLength != -1L && tmpFile.length() != totalLength) {
-                throw IOException("File incomplete after download")
-            }
-        }
-        tmpFile.renameTo(file)
-        mainHandler.post { listener?.onProgress(100) }
-    }
-
-    private fun calculateMD5(file: File): String? {
-        return try {
-            val buffer = ByteArray(8192)
-            val digest = MessageDigest.getInstance("MD5")
-            file.inputStream().use { fis ->
-                var read: Int
-                while (fis.read(buffer).also { read = it } != -1) {
-                    digest.update(buffer, 0, read)
-                }
-            }
-            digest.digest().joinToString("") { "%02x".format(it) }
-        } catch (e: Exception) {
-            Log.e(TAG, "[calculateMD5] Failed for ${file.name}", e)
-            null
-        }
-    }
-
-    private fun hasEnoughSpace(directory: File, requiredSize: Long): Boolean {
-        if (!directory.exists()) {
-            directory.mkdirs()
-        }
-        val stat = StatFs(directory.path)
-        val availableBytes = stat.availableBlocksLong * stat.blockSizeLong
-        return availableBytes >= requiredSize
+    private fun getPriority(url: String): Int = when {
+        url.endsWith(".svga") || url.endsWith(".gif") -> 10
+        url.endsWith(".png") || url.endsWith(".jpg") -> 5
+        url.endsWith(".mp4") -> 1
+        else -> 3
     }
 }
