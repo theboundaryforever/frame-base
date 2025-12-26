@@ -12,10 +12,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.TextView
 
-/**
- * 脑部减压版 UltimateSpanBuilder
- * 适配：RTL阿语、Builder模式、加粗、下划线、斜体、删除线、多图插入、点击事件
- */
+
 class UltimateSpanBuilder private constructor(private val format: String) {
 
     private val argsList = mutableListOf<Pair<String, List<Any>>>()
