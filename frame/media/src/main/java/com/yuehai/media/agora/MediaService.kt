@@ -6,6 +6,7 @@ import com.adealik.frame.mvvm.util.removeUiCallbacks
 import com.adealik.frame.mvvm.util.runOnUiThread
 import com.yuehai.data.collection.path.Rlt
 import com.yuehai.coroutine.coroutine.dispatcher.Dispatcher
+import com.yuehai.media.VoiceRoomLagMonitor
 
 import com.yuehai.media.constant.JoinChannelError
 import com.yuehai.media.constant.MediaChannelNameNull
@@ -416,6 +417,15 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
     override fun onMediaEngineLoadSuccess() {
         super.onMediaEngineLoadSuccess()
         log(" onMediaEngineLoadSuccess")
+    }
+
+    override fun onRemoteAudioStats(stats: RemoteAudioStats?) {
+        super.onRemoteAudioStats(stats)
+        VoiceRoomLagMonitor.onAudioStatsUpdate(
+            frozenRate = stats?.frozenRate?.toDouble() ?: return,
+            rtt = stats?.networkTransportDelay ?: return
+        )
+
     }
 
     /**
