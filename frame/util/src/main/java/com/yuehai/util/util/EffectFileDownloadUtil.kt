@@ -41,10 +41,8 @@ object OkDownloadExt {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** 唯一真理锁：保护下方的所有状态机变更 */
     private val globalMutex = Mutex()
 
-    /** 核心改进：抛弃 PriorityBlockingQueue，使用 List 配合 Mutex 实现强一致性 */
     private val downloadQueue = mutableListOf<DownloadItem>()
     private val waitingSet = mutableSetOf<String>()
     private val downloadingTasks = mutableMapOf<String, Job>()
@@ -68,17 +66,18 @@ object OkDownloadExt {
 
     fun downloadSingle(url: String, targetDir: File = MediaCacheManager.defaultDir, listener: DownloadListener? = null, md5: String? = null) {
         if (url.isEmpty()) return
+        Log.d(TAG, "add task: $url, priority: ${getPriority(url)}")
         addCallback(url, listener)
 
         scope.launch {
             globalMutex.withLock {
                 if (waitingSet.contains(url) || downloadingTasks.containsKey(url)) {
+                    Log.i(TAG, "task already exists in queue/running: $url")
                     startNextLocked()
                     return@withLock
                 }
                 waitingSet.add(url)
                 downloadQueue.add(DownloadItem(url, targetDir, listener, getPriority(url), md5))
-                // 保证优先级：每次入队后排序（任务量通常在百级，List 排序极快）
                 downloadQueue.sortByDescending { it.priority }
                 startNextLocked()
             }
@@ -86,10 +85,10 @@ object OkDownloadExt {
     }
 
     fun pause(url: String) {
+        Log.i(TAG, "pause task: $url")
         pausedSet.add(url)
         scope.launch {
             globalMutex.withLock {
-                // 强一致性移除：在锁内操作普通 List，绝无弱一致性问题
                 if (waitingSet.remove(url)) {
                     downloadQueue.removeAll { it.url == url }
                 }
@@ -99,10 +98,12 @@ object OkDownloadExt {
     }
 
     fun resume(url: String) {
+        Log.i(TAG, "resume task: $url")
         if (pausedSet.remove(url)) downloadSingle(url)
     }
 
     fun cancel(url: String) {
+        Log.w(TAG, "cancel task: $url")
         pausedSet.remove(url)
         retryCountMap.remove(url)
         callbackMap.remove(url)
@@ -123,37 +124,56 @@ object OkDownloadExt {
     /* ===================== 调度内核 ===================== */
 
     private fun startNextLocked() {
+        Log.v(TAG, "check schedule: running=$runningCount, waiting=${downloadQueue.size}")
         while (runningCount < MAX_PARALLEL_DOWNLOAD && downloadQueue.isNotEmpty()) {
             val item = downloadQueue.removeAt(0)
             waitingSet.remove(item.url)
 
-            if (pausedSet.contains(item.url)) continue
+            if (pausedSet.contains(item.url)) {
+                Log.d(TAG, "skip paused task in queue: ${item.url}")
+                continue
+            }
             launchTaskLocked(item)
         }
     }
 
     private fun launchTaskLocked(item: DownloadItem) {
         runningCount++
+        Log.i(TAG, "🚀 launch task: ${item.url} (runningCount=$runningCount)")
         val job = scope.launch {
             try {
                 yield()
                 val file = getTargetFile(item.url, item.targetDir)
                 if (file.exists() && file.length() > 0) {
                     if (item.md5 == null || calculateMD5(file).equals(item.md5, true)) {
+                        Log.d(TAG, "file already exists and valid: ${item.url}")
                         dispatchComplete(item.url, file)
                         return@launch
-                    } else file.delete()
+                    } else {
+                        Log.w(TAG, "MD5 mismatch for existing file, re-downloading: ${item.url}")
+                        file.delete()
+                    }
                 }
 
-                if (downloadWithRetry(item, file)) dispatchComplete(item.url, file)
-                else dispatchFail(item.url, IOException("Max retries reached"))
+                if (downloadWithRetry(item, file)) {
+                    dispatchComplete(item.url, file)
+                } else {
+                    Log.e(TAG, "task failed after all retries: ${item.url}")
+                    dispatchFail(item.url, IOException("Max retries reached"))
+                }
 
             } catch (e: Exception) {
-                if (e !is CancellationException) dispatchFail(item.url, e)
+                if (e is CancellationException) {
+                    Log.d(TAG, "task coroutine cancelled: ${item.url}")
+                } else {
+                    Log.e(TAG, "task exception: ${item.url}", e)
+                    dispatchFail(item.url, e)
+                }
             } finally {
                 globalMutex.withLock {
                     if (downloadingTasks.remove(item.url) != null) {
                         runningCount = max(0, runningCount - 1)
+                        Log.d(TAG, "task finished and slot released: ${item.url} (runningCount=$runningCount)")
                     }
                     startNextLocked()
                 }
@@ -163,14 +183,17 @@ object OkDownloadExt {
     }
 
     private fun stopRunningTaskLocked(url: String) {
-        downloadingTasks[url]?.cancel()
-        if (downloadingTasks.remove(url) != null) {
+        val job = downloadingTasks[url]
+        if (job != null) {
+            job.cancel()
+            downloadingTasks.remove(url)
             runningCount = max(0, runningCount - 1)
+            Log.d(TAG, "force stopped running task: $url (runningCount=$runningCount)")
             startNextLocked()
         }
     }
 
-    /* ===================== 网络与IO (保持严谨) ===================== */
+    /* ===================== 网络与IO ===================== */
 
     private suspend fun downloadWithRetry(item: DownloadItem, file: File): Boolean {
         var retry = retryCountMap[item.url] ?: 0
@@ -179,14 +202,18 @@ object OkDownloadExt {
                 processDownload(item.url, file)
                 if (item.md5 != null && !calculateMD5(file).equals(item.md5, true)) {
                     file.delete()
-                    throw IOException("MD5 mismatch")
+                    throw IOException("MD5 mismatch after download")
                 }
                 retryCountMap.remove(item.url)
                 return true
             } catch (e: Exception) {
-                if (e is CancellationException || pausedSet.contains(item.url)) return false
+                if (e is CancellationException || pausedSet.contains(item.url)) {
+                    Log.d(TAG, "stop retry due to pause/cancel: ${item.url}")
+                    return false
+                }
                 retry++
                 retryCountMap[item.url] = retry
+                Log.w(TAG, "retry task ($retry/$MAX_RETRY): ${item.url} cause: ${e.message}")
                 delay(1000L * retry)
             }
         }
@@ -201,7 +228,11 @@ object OkDownloadExt {
         if (cfgFile.exists() && tmpFile.exists()) {
             startBytes = cfgFile.readText().toLongOrNull() ?: 0L
             if (startBytes > tmpFile.length()) startBytes = tmpFile.length()
-        } else tmpFile.delete()
+            Log.d(TAG, "resume download from: $startBytes bytes, url: $url")
+        } else {
+            tmpFile.delete()
+            cfgFile.delete()
+        }
 
         val request = Request.Builder().url(url)
             .apply { if (startBytes > 0) addHeader("Range", "bytes=$startBytes-") }.build()
@@ -210,10 +241,13 @@ object OkDownloadExt {
             val isPartial = resp.code == 206
             if (!resp.isSuccessful && !isPartial) throw IOException("HTTP ${resp.code}")
             val body = resp.body ?: throw IOException("Empty body")
-            val totalLength = if (isPartial) startBytes + body.contentLength() else body.contentLength()
+            val contentLen = body.contentLength()
+            val totalLength = if (isPartial) startBytes + contentLen else contentLen
 
-            if (body.contentLength() > 0 && !ensureSpace(file.parentFile!!, body.contentLength())) {
-                throw IOException("No space left")
+            Log.i(TAG, "connection success: $url, totalSize: $totalLength, isPartial: $isPartial")
+
+            if (contentLen > 0 && !ensureSpace(file.parentFile!!, contentLen)) {
+                throw IOException("No space left on device after eviction")
             }
 
             var lastDisplayProgress = if (totalLength > 0) (startBytes * 100 / totalLength).toInt() else 0
@@ -233,7 +267,7 @@ object OkDownloadExt {
                         downloaded += len
 
                         val now = System.currentTimeMillis()
-                        if (now - lastSaveTime >= 100L) {
+                        if (now - lastSaveTime >= 200L) { // 稍微降低日志频率
                             val cur = if (totalLength > 0) (downloaded * 100 / totalLength).toInt() else 0
                             lastDisplayProgress = max(lastDisplayProgress, cur)
                             dispatchProgress(url, lastDisplayProgress)
@@ -248,16 +282,23 @@ object OkDownloadExt {
             }
             if (!tmpFile.renameTo(file)) throw IOException("Rename error")
             cfgFile.delete()
+            Log.i(TAG, "download success: $url -> ${file.absolutePath}")
         }
     }
 
-    /* ===================== 磁盘清理逻辑 (安全 & 协作) ===================== */
+    /* ===================== 磁盘清理逻辑 ===================== */
 
     private suspend fun ensureSpace(dir: File, requiredSize: Long): Boolean {
-        if (!dir.exists()) dir.mkdirs()
-        if (getAvailableSpace(dir) >= requiredSize) return true
+        val available = getAvailableSpace(dir)
+        if (available >= requiredSize) return true
+
+        Log.w(TAG, "low space: required $requiredSize, available $available. triggering eviction...")
         evictOldCaches(dir, requiredSize)
-        return getAvailableSpace(dir) >= requiredSize
+
+        val finalAvailable = getAvailableSpace(dir)
+        val success = finalAvailable >= requiredSize
+        if (!success) Log.e(TAG, "still no space after eviction! available: $finalAvailable")
+        return success
     }
 
     private suspend fun evictOldCaches(dir: File, neededBytes: Long) = withContext(Dispatchers.IO) {
@@ -269,17 +310,22 @@ object OkDownloadExt {
 
             yield()
             val sortedFiles = files.sortedBy { it.lastModified() }
+            Log.d(TAG, "found ${sortedFiles.size} candidate files for eviction")
 
+            var freedTotal = 0L
             for (file in sortedFiles) {
                 ensureActive()
                 val size = file.length()
                 if (file.delete()) {
+                    freedTotal += size
+                    Log.v(TAG, "deleted old cache file: ${file.name}, freed: $size")
                     if (getAvailableSpace(dir) >= neededBytes) break
                 }
                 yield()
             }
+            Log.i(TAG, "eviction finished. total freed: $freedTotal bytes")
         } catch (e: Exception) {
-            if (e !is CancellationException) Log.e(TAG, "Eviction failed", e)
+            if (e !is CancellationException) Log.e(TAG, "eviction error", e)
         }
     }
 
