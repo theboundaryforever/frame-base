@@ -2,8 +2,6 @@ package com.adealik.frame.base
 
 import android.content.Intent
 import android.content.res.Resources
-import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -17,32 +15,38 @@ import androidx.viewpager2.widget.ViewPager2
 import com.adealik.frame.base.dialogqueue.DialogQueue
 import com.adealik.frame.base.dialogqueue.data.Priority
 import com.adealik.frame.base.ext.fastLazy
+import com.adealik.frame.base.loading.ActivityLoadingController
 import com.gyf.immersionbar.ImmersionBar
-import com.kaopiz.kprogresshud.KProgressHUD
-import com.yuehai.util.util.getCompatColor
-
 
 open class NewBaseActivity : AppCompatActivity() {
+
     private val dialogQueue: DialogQueue by fastLazy {
         DialogQueue(this)
     }
 
-    private var loadingDialog: KProgressHUD? = null
+    /** ⭐ 统一 loading 控制器 */
+    protected val loadingController by lazy {
+        ActivityLoadingController(this)
+    }
 
+    init {
+        loadingController.autoDismissLoading = false
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         onBeforeCreate()
         super.onCreate(savedInstanceState)
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
-        val initAfter = onAfterSuperCreate()
-        if (initAfter) {
+
+        if (onAfterSuperCreate()) {
             ImmersionBar.with(this).statusBarDarkFont(true).init()
             ImmersionBar.with(this).navigationBarColor(android.R.color.black)
                 .navigationBarDarkIcon(true).init()
+
             initViews()
-            if(!shouldHideNavigationBar()){
-                applyImmersiveNavigation(hideNavigationBar = shouldHideNavigationBar())
+            if (!shouldHideNavigationBar()) {
+                applyImmersiveNavigation(shouldHideNavigationBar())
             }
             initComponents()
             observeViewModel()
@@ -51,125 +55,50 @@ open class NewBaseActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 子类通过 override 控制是否隐藏底部导航栏（默认 false，即显示）
-     */
+    /* ================= loading 对外 API ================= */
+
+    fun showLoading(cancelable: Boolean = false) = loadingController.showLoading(cancelable)
+
+    fun dismissLoading() = loadingController.dismissLoading()
+
+    fun forceDismissLoading() = loadingController.forceDismissLoading()
+
+    fun setAutoDismissLoading(auto: Boolean) {
+        loadingController.autoDismissLoading = auto
+    }
+
+    /* =================================================== */
+
     protected open fun shouldHideNavigationBar(): Boolean = false
 
-    /**
-     * 控制导航栏显示/隐藏
-     */
-    protected fun applyImmersiveNavigation(hideNavigationBar: Boolean) {
+    protected fun applyImmersiveNavigation(hide: Boolean) {
         WindowCompat.setDecorFitsSystemWindows(window, false)
-
         val controller = WindowInsetsControllerCompat(window, window.decorView)
-        controller.isAppearanceLightStatusBars = true
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
-        if (hideNavigationBar) {
-            controller.hide(WindowInsetsCompat.Type.navigationBars())
-        } else {
-            controller.show(WindowInsetsCompat.Type.navigationBars())
-        }
+        if (hide) controller.hide(WindowInsetsCompat.Type.navigationBars())
+        else controller.show(WindowInsetsCompat.Type.navigationBars())
 
-        // 自动获取根布局（整个内容区域）
         val rootView = findViewById<View>(android.R.id.content)
-
-        ViewCompat.setOnApplyWindowInsetsListener(rootView) { view, insets ->
-            val navBarInsets = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
-
-            // 仅设置 paddingBottom，使内容不被底部导航栏遮挡；不处理顶部
-            view.setPadding(
-                view.paddingLeft,
-                0, // 不抬高状态栏
-                view.paddingRight,
-                if (hideNavigationBar) 0 else navBarInsets.bottom
-            )
-
+        ViewCompat.setOnApplyWindowInsetsListener(rootView) { v, insets ->
+            val nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            v.setPadding(v.paddingLeft, 0, v.paddingRight, if (hide) 0 else nav.bottom)
             insets
         }
     }
 
-
-
-    open fun immersionBarDark() {
-        ImmersionBar.with(this).statusBarDarkFont(true).init()
-        ImmersionBar.with(this).navigationBarColor(android.R.color.black)
-            .navigationBarDarkIcon(true).init()
-    }
-
-    open fun immersionBarWhite() {
-        ImmersionBar.with(this).statusBarDarkFont(true).init()
-        ImmersionBar.with(this).navigationBarColor(android.R.color.black)
-            .navigationBarDarkIcon(true).init()
-    }
-
-
-    open fun onBeforeCreate() {
-
-    }
-
-    open fun onAfterSuperCreate(): Boolean {
-        return true
-    }
-
-    open fun initViews() {
-
-    }
-
-    open fun initComponents() {
-
-    }
-
-    open fun observeViewModel() {
-
-    }
-
-    open fun loadData() {
-
-    }
-
-    /**
-     * 加载数据之后初始化一些不紧急的内容
-     */
-    open fun initOthers() {
-
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleNewIntent(intent)
-    }
-
-    open fun handleNewIntent(intent: Intent?) {
-
-    }
-
-
-    private fun initLoadingDialog() {
-        if (loadingDialog == null) {
-            loadingDialog = KProgressHUD.create(this)
-                .setStyle(KProgressHUD.Style.SPIN_INDETERMINATE)
-                .setCancellable(true)
-                .setAnimationSpeed(2)
-                .setDimAmount(0.5f)
-        }
-    }
-
-    fun showLoading() {
-        initLoadingDialog()
-        loadingDialog?.show()
-    }
-
-    fun dismissLoading() {
-        loadingDialog?.dismiss()
-    }
-
+    open fun onBeforeCreate() {}
+    open fun onAfterSuperCreate(): Boolean = true
+    open fun initViews() {}
+    open fun initComponents() {}
+    open fun observeViewModel() {}
+    open fun loadData() {}
+    open fun initOthers() {}
 
     override fun onDestroy() {
         super.onDestroy()
-        dismissLoading()
+        loadingController.forceDismissLoading()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -182,9 +111,7 @@ open class NewBaseActivity : AppCompatActivity() {
         if (view is ViewPager2) return true
         if (view is ViewGroup) {
             for (i in 0 until view.childCount) {
-                if (containsViewPager2(view.getChildAt(i))) {
-                    return true
-                }
+                if (containsViewPager2(view.getChildAt(i))) return true
             }
         }
         return false
@@ -211,7 +138,7 @@ open class NewBaseActivity : AppCompatActivity() {
 
     override fun finish() {
         super.finish()
+        loadingController.dismissLoading()
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
     }
-
 }
