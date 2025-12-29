@@ -29,10 +29,6 @@ open class NewBaseActivity : AppCompatActivity() {
         ActivityLoadingController(this)
     }
 
-    init {
-        loadingController.autoDismissLoading = false
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         onBeforeCreate()
@@ -40,9 +36,7 @@ open class NewBaseActivity : AppCompatActivity() {
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
 
         if (onAfterSuperCreate()) {
-            ImmersionBar.with(this).statusBarDarkFont(true).init()
-            ImmersionBar.with(this).navigationBarColor(android.R.color.black)
-                .navigationBarDarkIcon(true).init()
+            immersionBarDark()
 
             initViews()
             if (!shouldHideNavigationBar()) {
@@ -68,6 +62,19 @@ open class NewBaseActivity : AppCompatActivity() {
     }
 
     /* =================================================== */
+
+    /** ⭐ ImmersionBar 方法保留 */
+    open fun immersionBarDark() {
+        ImmersionBar.with(this).statusBarDarkFont(true).init()
+        ImmersionBar.with(this).navigationBarColor(android.R.color.black)
+            .navigationBarDarkIcon(true).init()
+    }
+
+    open fun immersionBarWhite() {
+        ImmersionBar.with(this).statusBarDarkFont(true).init()
+        ImmersionBar.with(this).navigationBarColor(android.R.color.white)
+            .navigationBarDarkIcon(false).init()
+    }
 
     protected open fun shouldHideNavigationBar(): Boolean = false
 
@@ -98,7 +105,7 @@ open class NewBaseActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        loadingController.forceDismissLoading()
+        loadingController.dismissLoading()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
