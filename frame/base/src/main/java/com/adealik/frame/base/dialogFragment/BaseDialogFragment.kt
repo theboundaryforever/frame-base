@@ -83,6 +83,10 @@ open class BaseDialogFragment(
         }
     }
 
+    open fun show(manager: FragmentManager) {
+        show(manager, fgTag)
+    }
+
     override fun show(transaction: FragmentTransaction, tag: String?): Int {
         return if (!isShow && !isAdded && !isVisible) {
             isShow = true
