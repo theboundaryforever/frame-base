@@ -31,7 +31,7 @@ open class BaseDialogFragment(
 
     private var dialogCallbackHandler: DialogCallback? = null
 
-    /** loading 控制器 */
+    /** ⭐ loading 控制器 */
     protected val loadingController by lazy {
         DialogLoadingController(this)
     }
@@ -42,14 +42,11 @@ open class BaseDialogFragment(
 
     /* ================= loading API ================= */
 
-    fun showLoading(cancelable: Boolean = false) =
-        loadingController.showLoading(cancelable)
+    fun showLoading(cancelable: Boolean = false) = loadingController.showLoading(cancelable)
 
-    fun dismissLoading() =
-        loadingController.dismissLoading()
+    fun dismissLoading() = loadingController.dismissLoading()
 
-    fun forceDismissLoading() =
-        loadingController.forceDismissLoading()
+    fun forceDismissLoading() = loadingController.forceDismissLoading()
 
     fun setAutoDismissLoading(auto: Boolean) {
         loadingController.autoDismissLoading = auto
@@ -60,8 +57,10 @@ open class BaseDialogFragment(
     @CallSuper
     override fun onCreateView(
         inflater: LayoutInflater,
-        container: ViewGroup?, savedInstanceState: Bundle?
-    ): View = inflater.inflate(layoutId, container, false)
+        container: ViewGroup?, savedInstanceState: Bundle?,
+    ): View {
+        return inflater.inflate(layoutId, container, false)
+    }
 
     @CallSuper
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -78,15 +77,24 @@ open class BaseDialogFragment(
     open fun loadData() {}
 
     override fun show(manager: FragmentManager, tag: String?) {
-        if (isShow || isAdded) return
+        if (!isShow && !isAdded) {
+            isShow = true
+            manager.beginTransaction().add(this, tag).commitAllowingStateLoss()
+        }
+    }
 
-        isShow = true
-
-        manager.beginTransaction().apply {
-            val prev = tag?.let { manager.findFragmentByTag(it) }
-            if (prev != null) remove(prev)
-            add(this@BaseDialogFragment, tag)
-            commitAllowingStateLoss()
+    override fun show(transaction: FragmentTransaction, tag: String?): Int {
+        return if (!isShow && !isAdded && !isVisible) {
+            isShow = true
+            try {
+                super.show(transaction, tag)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                this.dismissAllowingStateLoss()
+                -1
+            }
+        } else {
+            -1
         }
     }
 
@@ -98,37 +106,33 @@ open class BaseDialogFragment(
                 Log.e(TAG, "dismiss exception", e)
             }
         }
-        // ❗不在这里动 loading
+        loadingController.dismissLoading()
     }
 
     override fun onDismiss(dialog: DialogInterface) {
         super.onDismiss(dialog)
         isShow = false
         dialogCallbackHandler?.pollDialog()
-
-        // Dialog 真正消失时，交给 controller 决定
-        loadingController.dismissLoading()
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-        // 防止 Window 泄漏
-        loadingController.forceDismissLoading()
     }
 
     override fun onStart() {
         super.onStart()
         isCancelable = cancelable
         dialog?.setCanceledOnTouchOutside(canceledOnTouchOutside)
+        // 调整窗口属性
+        dialog?.window?.let { resetWindowAttributes(it) }
     }
 
     override fun onResume() {
         super.onResume()
         dialog?.window?.requestFeature(Window.FEATURE_NO_TITLE)
+        dialog?.window?.let { resetWindowAttributes(it) }
     }
 
+    open fun resetWindowAttributes(window: Window) {}
+
     open fun blockBackEvent() {
-        dialog?.setOnKeyListener { _, keyCode, _ ->
+        dialog?.setOnKeyListener { _: DialogInterface?, keyCode: Int, _: KeyEvent? ->
             keyCode == KeyEvent.KEYCODE_BACK
         }
     }
