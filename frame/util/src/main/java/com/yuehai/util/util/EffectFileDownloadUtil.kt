@@ -33,7 +33,7 @@ object OkDownloadExt {
     private const val MAX_RETRY = 3
 
     private const val SMALL_FILE_THRESHOLD = 200 * 1024L
-    private const val PROGRESS_SAVE_BYTES = 1024 * 1024L // 提高到 1MB 写入一次 cfg，减少 IO 开销
+    private const val PROGRESS_SAVE_BYTES = 1024 * 1024L
     private const val PROGRESS_SAVE_INTERVAL = 1000L
 
     private val SAFE_EXTENSIONS =
@@ -71,7 +71,7 @@ object OkDownloadExt {
         val md5: String?
     )
 
-    /* ===================== 核心 API ===================== */
+    /* ===================== 核心 API (完全未改动) ===================== */
 
     fun downloadSingle(
         url: String,
@@ -80,16 +80,13 @@ object OkDownloadExt {
         md5: String? = null
     ) {
         if (url.isBlank()) return
-
         addCallback(url, listener)
-
         scope.launch {
             globalMutex.withLock {
                 if (waitingSet.contains(url) || downloadingTasks.containsKey(url)) {
                     startNextLocked()
                     return@withLock
                 }
-
                 val item = DownloadItem(url, targetDir, getPriority(url), md5)
                 waitingSet.add(url)
                 downloadQueue.add(item)
@@ -122,7 +119,6 @@ object OkDownloadExt {
         pausedItems.remove(url)
         retryCountMap.remove(url)
         callbackMap.remove(url)
-
         scope.launch {
             globalMutex.withLock {
                 waitingSet.remove(url)
@@ -130,7 +126,6 @@ object OkDownloadExt {
                 stopRunningTaskLocked(url)
             }
         }
-
         val file = getTargetFile(url, MediaCacheManager.defaultDir)
         File(file.absolutePath + ".part").delete()
         File(file.absolutePath + ".cfg").delete()
@@ -153,7 +148,6 @@ object OkDownloadExt {
         val job = scope.launch {
             try {
                 val file = getTargetFile(item.url, item.targetDir)
-
                 if (file.exists() && file.length() > 0) {
                     val valid = item.md5 == null || calculateMD5(file) == item.md5
                     if (valid) {
@@ -163,13 +157,11 @@ object OkDownloadExt {
                         file.delete()
                     }
                 }
-
                 if (downloadWithRetry(item, file)) {
                     dispatchComplete(item.url, file)
                 } else {
                     dispatchFail(item.url, IOException("Max retries or manual stop"))
                 }
-
             } catch (e: CancellationException) {
                 Log.d(TAG, "⛔ cancelled: ${item.url}")
             } catch (e: Exception) {
@@ -189,7 +181,7 @@ object OkDownloadExt {
         downloadingTasks.remove(url)?.cancel()
     }
 
-    /* ===================== 下载实现 ===================== */
+    /* ===================== 下载实现 (核心修复点) ===================== */
 
     private suspend fun downloadWithRetry(item: DownloadItem, file: File): Boolean {
         var retry = retryCountMap[item.url] ?: 0
@@ -211,50 +203,50 @@ object OkDownloadExt {
 
     private suspend fun processDownload(item: DownloadItem, file: File) =
         withContext(Dispatchers.IO) {
-
             val tmp = File(file.absolutePath + ".part")
             val cfg = File(file.absolutePath + ".cfg")
 
-            // 【修复 1】更严谨的断点状态检查
             var startBytes = 0L
             if (tmp.exists() && cfg.exists()) {
                 val savedBytes = cfg.readText().toLongOrNull() ?: 0L
-                // 必须保证临时文件物理大小和记录大小一致，否则认为数据已损坏
                 if (savedBytes > 0 && savedBytes == tmp.length()) {
                     startBytes = savedBytes
                 } else {
-                    tmp.delete()
-                    cfg.delete()
+                    tmp.delete(); cfg.delete()
                 }
             } else {
-                tmp.delete()
-                cfg.delete()
+                tmp.delete(); cfg.delete()
             }
 
             val request = Request.Builder()
                 .url(item.url)
-                .apply {
-                    if (startBytes > 0) addHeader("Range", "bytes=$startBytes-")
-                }
+                .apply { if (startBytes > 0) addHeader("Range", "bytes=$startBytes-") }
                 .build()
 
             client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful && resp.code != 206)
-                    throw IOException("HTTP ${resp.code}")
+                // 修复点 1：处理非 20x 的错误码
+                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
 
                 val body = resp.body ?: throw IOException("Empty body")
                 val contentLen = body.contentLength()
-                val totalLen = if (resp.code == 206) startBytes + contentLen else contentLen
+
+                // 修复点 2：判断是否支持断点续传 (206 表示支持，200 表示不支持或无视 Range)
+                val isPartial = resp.code == 206
+                val actualStartBytes = if (isPartial) startBytes else 0L
+                val totalLen = if (isPartial) startBytes + contentLen else contentLen
 
                 if (!ensureSpace(file.parentFile!!, if (contentLen > 0) contentLen else SMALL_FILE_THRESHOLD)) {
                     throw IOException("Insufficient storage space")
                 }
 
                 RandomAccessFile(tmp, "rw").use { raf ->
-                    raf.seek(startBytes)
+                    // 如果服务器不支持 Range (返回200)，则清空文件从头写
+                    if (!isPartial) raf.setLength(0)
+
+                    raf.seek(actualStartBytes)
 
                     val buf = ByteArray(16 * 1024)
-                    var downloaded = startBytes
+                    var downloaded = actualStartBytes
                     var lastProgress = -1
                     var lastSaveTime = System.currentTimeMillis()
 
@@ -282,24 +274,19 @@ object OkDownloadExt {
                             }
                         }
                     }
-                    // 【修复 2】强制落盘，防止断电或闪退导致文件空洞
-                    raf.fd.sync()
+                    raf.fd.sync() // 强制落盘
                 }
 
-                // 【修复 3】MD5 校验逻辑统一
                 if (item.md5 != null) {
                     val actualMd5 = calculateMD5(tmp)
                     if (!actualMd5.equals(item.md5, true)) {
-                        tmp.delete()
-                        cfg.delete()
+                        tmp.delete(); cfg.delete()
                         throw IOException("MD5 Verify Failed")
                     }
                 }
 
-                // 【修复 4】重命名安全兜底
                 if (file.exists()) file.delete()
                 if (!tmp.renameTo(file)) {
-                    // 如果 rename 失败（跨分区或权限），执行拷贝
                     tmp.copyTo(file, overwrite = true)
                     tmp.delete()
                 }
@@ -307,13 +294,11 @@ object OkDownloadExt {
             }
         }
 
-    /* ===================== 工具 ===================== */
+    /* ===================== 工具 (保持一致) ===================== */
 
     private fun addCallback(url: String, listener: DownloadListener?) {
         if (listener == null) return
-        val list = callbackMap.getOrPut(url) {
-            Collections.synchronizedList(mutableListOf())
-        }
+        val list = callbackMap.getOrPut(url) { Collections.synchronizedList(mutableListOf()) }
         list.add(WeakReference(listener))
     }
 
@@ -329,15 +314,11 @@ object OkDownloadExt {
     }
 
     private fun dispatchComplete(url: String, file: File) {
-        mainHandler.post {
-            callbackMap.remove(url)?.forEach { it.get()?.onComplete(file) }
-        }
+        mainHandler.post { callbackMap.remove(url)?.forEach { it.get()?.onComplete(file) } }
     }
 
     private fun dispatchFail(url: String, e: Throwable?) {
-        mainHandler.post {
-            callbackMap.remove(url)?.forEach { it.get()?.onFailed(e) }
-        }
+        mainHandler.post { callbackMap.remove(url)?.forEach { it.get()?.onFailed(e) } }
     }
 
     private fun calculateMD5(file: File): String? = try {
@@ -345,14 +326,10 @@ object OkDownloadExt {
         file.inputStream().use {
             val buf = ByteArray(8192)
             var len: Int
-            while (it.read(buf).also { len = it } != -1) {
-                md.update(buf, 0, len)
-            }
+            while (it.read(buf).also { len = it } != -1) { md.update(buf, 0, len) }
         }
         md.digest().joinToString("") { "%02x".format(it) }
-    } catch (e: Exception) {
-        null
-    }
+    } catch (e: Exception) { null }
 
     private fun ensureSpace(dir: File, need: Long): Boolean {
         if (getAvailableSpace(dir) >= need) return true
@@ -365,7 +342,6 @@ object OkDownloadExt {
             f.isFile && SAFE_EXTENSIONS.contains(f.extension.lowercase()) &&
                     !f.name.endsWith(".part") && !f.name.endsWith(".cfg")
         } ?: return
-
         for (f in files.sortedBy { it.lastModified() }) {
             f.delete()
             if (getAvailableSpace(dir) >= need) break
@@ -375,15 +351,11 @@ object OkDownloadExt {
     private fun getAvailableSpace(dir: File): Long = try {
         val stat = StatFs(dir.path)
         stat.availableBlocksLong * stat.blockSizeLong
-    } catch (e: Exception) {
-        0L
-    }
+    } catch (e: Exception) { 0L }
 
     private fun getTargetFile(url: String, dir: File): File = when {
-        url.endsWith(".svga") ->
-            MediaCacheManager.getSVGACacheFile(AppUtil.appContext, url)
-        url.endsWith(".mp4") ->
-            MediaCacheManager.getVapMp4CacheFile(AppUtil.appContext, url)
+        url.endsWith(".svga") -> MediaCacheManager.getSVGACacheFile(AppUtil.appContext, url)
+        url.endsWith(".mp4") -> MediaCacheManager.getVapMp4CacheFile(AppUtil.appContext, url)
         else -> File(dir, url.substringAfterLast("/"))
     }
 
