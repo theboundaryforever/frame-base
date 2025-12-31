@@ -11,9 +11,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.File
-import java.io.IOException
-import java.io.RandomAccessFile
+import java.io.*
 import java.lang.ref.WeakReference
 import java.security.MessageDigest
 import java.util.*
@@ -35,8 +33,8 @@ object OkDownloadExt {
     private const val MAX_RETRY = 3
 
     private const val SMALL_FILE_THRESHOLD = 200 * 1024L
-    private const val PROGRESS_SAVE_BYTES = 512 * 1024L
-    private const val PROGRESS_SAVE_INTERVAL = 500L
+    private const val PROGRESS_SAVE_BYTES = 1024 * 1024L // 提高到 1MB 写入一次 cfg，减少 IO 开销
+    private const val PROGRESS_SAVE_INTERVAL = 1000L
 
     private val SAFE_EXTENSIONS =
         setOf("svga", "mp4", "gif", "png", "jpg", "jpeg", "webp")
@@ -102,7 +100,6 @@ object OkDownloadExt {
     }
 
     fun pause(url: String) {
-        Log.i(TAG, "⏸ pause: $url")
         pausedSet.add(url)
         scope.launch {
             globalMutex.withLock {
@@ -116,13 +113,11 @@ object OkDownloadExt {
 
     fun resume(url: String) {
         val item = pausedItems.remove(url) ?: return
-        Log.i(TAG, "▶️ resume: $url")
         pausedSet.remove(url)
         downloadSingle(item.url, item.targetDir, null, item.md5)
     }
 
     fun cancel(url: String) {
-        Log.w(TAG, "❌ cancel: $url")
         pausedSet.remove(url)
         pausedItems.remove(url)
         retryCountMap.remove(url)
@@ -148,9 +143,7 @@ object OkDownloadExt {
         while (runningCount < MAX_PARALLEL_DOWNLOAD && downloadQueue.isNotEmpty()) {
             val item = downloadQueue.removeAt(0)
             waitingSet.remove(item.url)
-
             if (pausedSet.contains(item.url)) continue
-
             launchTaskLocked(item)
         }
     }
@@ -210,7 +203,6 @@ object OkDownloadExt {
             } catch (e: Exception) {
                 retry++
                 retryCountMap[item.url] = retry
-                Log.w(TAG, "🔁 retry $retry/$MAX_RETRY ${item.url}", e)
                 delay(1000L * retry)
             }
         }
@@ -223,10 +215,17 @@ object OkDownloadExt {
             val tmp = File(file.absolutePath + ".part")
             val cfg = File(file.absolutePath + ".cfg")
 
+            // 【修复 1】更严谨的断点状态检查
             var startBytes = 0L
             if (tmp.exists() && cfg.exists()) {
-                startBytes = cfg.readText().toLongOrNull() ?: 0L
-                if (startBytes > tmp.length()) startBytes = tmp.length()
+                val savedBytes = cfg.readText().toLongOrNull() ?: 0L
+                // 必须保证临时文件物理大小和记录大小一致，否则认为数据已损坏
+                if (savedBytes > 0 && savedBytes == tmp.length()) {
+                    startBytes = savedBytes
+                } else {
+                    tmp.delete()
+                    cfg.delete()
+                }
             } else {
                 tmp.delete()
                 cfg.delete()
@@ -245,19 +244,11 @@ object OkDownloadExt {
 
                 val body = resp.body ?: throw IOException("Empty body")
                 val contentLen = body.contentLength()
-                val totalLen =
-                    if (resp.code == 206) startBytes + contentLen else contentLen
+                val totalLen = if (resp.code == 206) startBytes + contentLen else contentLen
 
-                if (!ensureSpace(
-                        file.parentFile!!,
-                        if (contentLen > 0) contentLen else SMALL_FILE_THRESHOLD
-                    )
-                ) {
+                if (!ensureSpace(file.parentFile!!, if (contentLen > 0) contentLen else SMALL_FILE_THRESHOLD)) {
                     throw IOException("Insufficient storage space")
                 }
-
-                val digest = MessageDigest.getInstance("MD5")
-                val canMd5 = startBytes == 0L && item.md5 != null
 
                 RandomAccessFile(tmp, "rw").use { raf ->
                     raf.seek(startBytes)
@@ -271,11 +262,9 @@ object OkDownloadExt {
                         var len: Int
                         while (input.read(buf).also { len = it } != -1) {
                             ensureActive()
-                            if (pausedSet.contains(item.url))
-                                throw CancellationException()
+                            if (pausedSet.contains(item.url)) throw CancellationException()
 
                             raf.write(buf, 0, len)
-                            if (canMd5) digest.update(buf, 0, len)
                             downloaded += len
 
                             if (totalLen > 0) {
@@ -287,29 +276,33 @@ object OkDownloadExt {
                             }
 
                             val now = System.currentTimeMillis()
-                            if (downloaded % PROGRESS_SAVE_BYTES == 0L ||
-                                now - lastSaveTime > PROGRESS_SAVE_INTERVAL
-                            ) {
+                            if (downloaded % PROGRESS_SAVE_BYTES == 0L || now - lastSaveTime > PROGRESS_SAVE_INTERVAL) {
                                 cfg.writeText(downloaded.toString())
                                 lastSaveTime = now
                             }
                         }
                     }
+                    // 【修复 2】强制落盘，防止断电或闪退导致文件空洞
+                    raf.fd.sync()
                 }
 
-                if (canMd5) {
-                    val md5 = digest.digest()
-                        .joinToString("") { "%02x".format(it) }
-                    if (!md5.equals(item.md5, true))
+                // 【修复 3】MD5 校验逻辑统一
+                if (item.md5 != null) {
+                    val actualMd5 = calculateMD5(tmp)
+                    if (!actualMd5.equals(item.md5, true)) {
+                        tmp.delete()
+                        cfg.delete()
                         throw IOException("MD5 Verify Failed")
-                } else if (item.md5 != null) {
-                    if (calculateMD5(tmp) != item.md5)
-                        throw IOException("MD5 Verify Failed (Resume)")
+                    }
                 }
 
-                if (!tmp.renameTo(file))
-                    throw IOException("Rename failed")
-
+                // 【修复 4】重命名安全兜底
+                if (file.exists()) file.delete()
+                if (!tmp.renameTo(file)) {
+                    // 如果 rename 失败（跨分区或权限），执行拷贝
+                    tmp.copyTo(file, overwrite = true)
+                    tmp.delete()
+                }
                 cfg.delete()
             }
         }
@@ -369,10 +362,8 @@ object OkDownloadExt {
 
     private fun evictOldCaches(dir: File, need: Long) {
         val files = dir.listFiles { f ->
-            f.isFile &&
-                    SAFE_EXTENSIONS.contains(f.extension.lowercase()) &&
-                    !f.name.endsWith(".part") &&
-                    !f.name.endsWith(".cfg")
+            f.isFile && SAFE_EXTENSIONS.contains(f.extension.lowercase()) &&
+                    !f.name.endsWith(".part") && !f.name.endsWith(".cfg")
         } ?: return
 
         for (f in files.sortedBy { it.lastModified() }) {
