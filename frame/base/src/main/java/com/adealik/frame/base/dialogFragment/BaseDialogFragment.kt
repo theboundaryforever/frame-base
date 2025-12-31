@@ -17,10 +17,9 @@ import androidx.fragment.app.FragmentTransaction
 import com.adealik.frame.base.dialogqueue.DialogCallback
 import com.adealik.frame.base.dialogqueue.DialogQueue
 import com.adealik.frame.base.loading.DialogLoadingController
+import com.kaopiz.kprogresshud.KProgressHUD
 
-open class BaseDialogFragment(
-    @LayoutRes open val layoutId: Int
-) : DialogFragment() {
+open class BaseDialogFragment(@LayoutRes open val layoutId: Int) : DialogFragment() {
 
     companion object {
         private const val TAG = "BaseDialogFragment"
@@ -39,26 +38,36 @@ open class BaseDialogFragment(
     open val fgTag: String? = null
     open val cancelable: Boolean = true
     open val canceledOnTouchOutside: Boolean = true
+    private var dismissCallback: (() -> Unit)? = null
+    private val dismissCallbacks = mutableListOf<OnDismissCallback>()
+    private var clickCallback: ((tag: Any?) -> Unit)? = null
 
     /* ================= loading API ================= */
-
     fun showLoading(cancelable: Boolean = false) = loadingController.showLoading(cancelable)
-
     fun dismissLoading() = loadingController.dismissLoading()
-
     fun forceDismissLoading() = loadingController.forceDismissLoading()
-
     fun setAutoDismissLoading(auto: Boolean) {
         loadingController.autoDismissLoading = auto
     }
-
     /* ============================================== */
+
+    fun addOnDismissCallback(callback: OnDismissCallback) {
+        dismissCallbacks.add(callback)
+    }
+
+    fun removeOnDismissCallback(callback: OnDismissCallback) {
+        dismissCallbacks.remove(callback)
+    }
+
+    override fun onAttach(context: Context) {
+        super.onAttach(context)
+    }
 
     @CallSuper
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?, savedInstanceState: Bundle?,
-    ): View {
+    ): View? {
         return inflater.inflate(layoutId, container, false)
     }
 
@@ -71,25 +80,26 @@ open class BaseDialogFragment(
         loadData()
     }
 
-    open fun initViews() {}
-    open fun initComponents() {}
-    open fun observeViewModel() {}
-    open fun loadData() {}
-
-    override fun show(manager: FragmentManager, tag: String?) {
-        if (!isShow && !isAdded) {
-            isShow = true
-            manager.beginTransaction().add(this, tag).commitAllowingStateLoss()
-        }
+    fun isViewCreated(): Boolean {
+        return isAdded && view != null
     }
 
-    open fun show(manager: FragmentManager) {
-        show(manager, fgTag)
+    open fun initViews() {}
+    open fun observeViewModel() {}
+    open fun loadData() {}
+    open fun initComponents() {}
+
+    fun setCanceledOnTouchOutside(canceledOnTouchOutside: Boolean) {
+        dialog?.setCanceledOnTouchOutside(canceledOnTouchOutside)
+    }
+
+    open fun show(transaction: FragmentTransaction): Int {
+        return show(transaction, fgTag)
     }
 
     override fun show(transaction: FragmentTransaction, tag: String?): Int {
-        return if (!isShow && !isAdded && !isVisible) {
-            isShow = true
+        return if (!this.isShow && !this.isAdded && !this.isVisible) {
+            this.isShow = true
             try {
                 super.show(transaction, tag)
             } catch (e: Exception) {
@@ -102,46 +112,137 @@ open class BaseDialogFragment(
         }
     }
 
+    // ✅ 保留原来的 show(manager)
+    open fun show(manager: FragmentManager) {
+        show(manager, fgTag)
+    }
+
+    override fun show(manager: FragmentManager, tag: String?) {
+        if (!this.isShow && !this.isAdded && !this.isVisible) {
+            this.isShow = true
+            val ft = manager.beginTransaction()
+            val prev = manager.findFragmentByTag(tag)
+            if (prev != null) {
+                ft.remove(prev)
+            }
+            try {
+                ft.add(this, tag)
+                ft.commitAllowingStateLoss()
+            } catch (var6: Exception) {
+                var6.printStackTrace()
+                this.dismissAllowingStateLoss()
+            }
+        }
+    }
+
+    override fun dismiss() {
+        this.dismissAllowingStateLoss()
+        dismissLoading()
+    }
+
+    fun setDialogCallback(callback: DialogQueue) {
+        dialogCallbackHandler = callback
+    }
+
+    @CallSuper
+    override fun onActivityCreated(savedInstanceState: Bundle?) {
+        if (this.dialog == null) {
+            this.showsDialog = false
+        }
+        val window = dialog?.window
+        try {
+            window?.requestFeature(Window.FEATURE_NO_TITLE)
+        } catch (ex: Exception) {
+            Log.e(TAG, "requestFeature exception : $ex")
+        }
+        super.onActivityCreated(savedInstanceState)
+    }
+
     override fun dismissAllowingStateLoss() {
-        if (isAdded && !isStateSaved && !isDetached) {
+        if (isAdded && !isStateSaved && !isDetached && !isHidden) {
             try {
                 super.dismissAllowingStateLoss()
             } catch (e: Exception) {
-                Log.e(TAG, "dismiss exception", e)
+                e.printStackTrace()
             }
         }
-        loadingController.dismissLoading()
+        dismissLoading()
     }
 
     override fun onDismiss(dialog: DialogInterface) {
         super.onDismiss(dialog)
-        isShow = false
+        this.isShow = false
+        dismissCallback?.invoke()
+        dismissCallbacks.forEach { it.onDismiss() }
         dialogCallbackHandler?.pollDialog()
     }
 
+    fun setDismissCallback(dismissCallback: (() -> Unit)?): BaseDialogFragment {
+        this.dismissCallback = dismissCallback
+        return this
+    }
+
+    fun setClickCallback(clickCallback: ((tag: Any?) -> Unit)?): BaseDialogFragment {
+        this.clickCallback = clickCallback
+        return this
+    }
+
+    fun getClickCallback(): ((tag: Any?) -> Unit)? {
+        return clickCallback
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        this.isShow = false
+        dismissCallbacks.clear()
+    }
+
+    @CallSuper
     override fun onStart() {
-        super.onStart()
-        isCancelable = cancelable
-        dialog?.setCanceledOnTouchOutside(canceledOnTouchOutside)
-        // 调整窗口属性
-        dialog?.window?.let { resetWindowAttributes(it) }
+        try {
+            super.onStart()
+            isCancelable = cancelable
+            setCanceledOnTouchOutside(canceledOnTouchOutside)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Log.d(TAG, "onStart exception, exception message = ${e.message}")
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        dialog?.window?.requestFeature(Window.FEATURE_NO_TITLE)
-        dialog?.window?.let { resetWindowAttributes(it) }
+        try {
+            val dialog = dialog ?: return
+            val window = dialog.window ?: return
+            resetWindowAttributes(window)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Log.d(TAG, "onResume exception, exception message = ${e.message}")
+        }
+    }
+
+    open fun isShowing(): Boolean {
+        return isShow
     }
 
     open fun resetWindowAttributes(window: Window) {}
+
+    open fun immersionBarDark() {
+        // 保留 ImmersionBar 方法
+    }
+
+    open fun immersionBarWhite() {
+        // 保留 ImmersionBar 白色方法
+    }
 
     open fun blockBackEvent() {
         dialog?.setOnKeyListener { _: DialogInterface?, keyCode: Int, _: KeyEvent? ->
             keyCode == KeyEvent.KEYCODE_BACK
         }
     }
+}
 
-    fun setDialogCallback(callback: DialogQueue) {
-        dialogCallbackHandler = callback
-    }
+// ================== 接口 ==================
+interface OnDismissCallback {
+    fun onDismiss()
 }
