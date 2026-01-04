@@ -409,3 +409,26 @@ private fun AnimView.playMP4(
     startPlay(file)
 }
 
+/**
+ * 【兼容旧版本】playSVGA
+ * ⚠️ 请不要在新代码中使用，内部已转发到 playSVGAWithKey
+ */
+@Deprecated(
+    message = "Use playSVGAWithKey instead",
+    replaceWith = ReplaceWith("playSVGAWithKey(url, avatarUrl, nickName, loop, callback)")
+)
+fun SVGAImageView.playSVGA(
+    url: String,
+    avatarUrl: String = "",
+    nickName: String = "",
+    loop: Int = 1,
+    callback: PlayCallback? = null
+) {
+    playSVGAWithKey(
+        url = url,
+        avatarUrl = avatarUrl,
+        nickName = nickName,
+        loop = loop,
+        callback = callback
+    )
+}
