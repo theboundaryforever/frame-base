@@ -13,7 +13,6 @@ import com.bumptech.glide.Glide
 import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
 import com.opensource.svgaplayer.*
-import com.opensource.svgaplayer.SVGAParser.ParseCompletion
 import com.tencent.qgame.animplayer.AnimConfig
 import com.tencent.qgame.animplayer.AnimView
 import com.tencent.qgame.animplayer.inter.IAnimListener
@@ -23,11 +22,6 @@ import com.yuehai.util.AppUtil
 import com.yuehai.util.util.DownloadListener
 import com.yuehai.util.util.OkDownloadExt
 import com.yuehai.util.util.download.MediaCacheManager
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
 import org.libpag.PAGFile
 import org.libpag.PAGView
 import java.io.File
@@ -43,10 +37,13 @@ private const val TAG = "AnimPlayExt"
 val parser: SVGAParser by lazy {
     SVGAParser.shareParser().apply {
         init(AppUtil.appContext)
-        Log.d(TAG, "SVGAParser initialized")
     }
 }
 
+/**
+ * 修复：恢复为单线程执行器。
+ * 规避风险：防止多线程并发解码导致内存溢出(OOM)或 Parser 内部状态冲突。
+ */
 private val svgaDecodeExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
 private const val MAX_SVGA_CACHE_COUNT = 3
@@ -80,11 +77,14 @@ private fun loadSVGA(
         decode(object : SVGAParser.ParseCompletion {
             override fun onComplete(videoItem: SVGAVideoEntity) {
                 cacheSVGA(key, videoItem)
-                svgaLoading.remove(key)?.forEach { it(videoItem) }
+                // 修复：移除操作也需要同步保护，防止回调丢失
+                val callbacks = synchronized(svgaLoading) { svgaLoading.remove(key) }
+                callbacks?.forEach { it(videoItem) }
             }
 
             override fun onError() {
-                svgaLoading.remove(key)?.forEach { it(null) }
+                val callbacks = synchronized(svgaLoading) { svgaLoading.remove(key) }
+                callbacks?.forEach { it(null) }
             }
         })
     }
@@ -114,7 +114,6 @@ private fun SVGAImageView.playCore(
         override fun onFinished() {
             callback?.onPlayComplete()
         }
-
         override fun onPause() {}
         override fun onRepeat() {}
         override fun onStep(frame: Int, percentage: Double) {}
@@ -127,15 +126,13 @@ private fun SVGAImageView.playCore(
             key.startsWith("assets:") -> {
                 parser.decodeFromAssets(key.substringAfter("assets:"), completion)
             }
-
             isLocalFile -> {
                 try {
                     parser.decodeFromInputStream(FileInputStream(key), key, completion, true)
-                } catch (e: FileNotFoundException) {
+                } catch (e: Exception) {
                     completion.onError()
                 }
             }
-
             else -> {
                 try {
                     parser.decodeFromURL(URL(key), completion)
@@ -147,15 +144,13 @@ private fun SVGAImageView.playCore(
     }) { videoItem ->
         if (videoItem == null) {
             this.tag = null
-            callback?.onPlayFailed("SVGA decode failed for key: $key")
+            post { callback?.onPlayFailed("SVGA decode failed for key: $key") }
             return@loadSVGA
         }
 
         post {
-            if (this.tag != key) {
-                Log.w(TAG, "SVGA load complete, but View tag changed. Skipping animation start.")
-                return@post
-            }
+            // 防止 View 被复用导致显示错误的动画
+            if (this.tag != key) return@post
 
             stopAnimation()
 
@@ -180,24 +175,15 @@ private fun SVGAImageView.playCore(
                     .asBitmap()
                     .load(avatarUrl)
                     .into(object : CustomTarget<Bitmap>() {
-                        override fun onResourceReady(
-                            resource: Bitmap,
-                            transition: Transition<in Bitmap>?
-                        ) {
+                        override fun onResourceReady(resource: Bitmap, transition: Transition<in Bitmap>?) {
                             if (this@playCore.tag != key) return
-
                             dynamicEntity.setDynamicImage(resource, avatarKey)
                             setVideoItem(videoItem, dynamicEntity)
                             startAnimation()
                             callback?.onPlayStart()
                         }
 
-                        override fun onLoadCleared(placeholder: android.graphics.drawable.Drawable?) {
-                            if (this@playCore.tag != key) return
-                            setVideoItem(videoItem, dynamicEntity)
-                            startAnimation()
-                            callback?.onPlayStart()
-                        }
+                        override fun onLoadCleared(placeholder: android.graphics.drawable.Drawable?) {}
 
                         override fun onLoadFailed(errorDrawable: android.graphics.drawable.Drawable?) {
                             if (this@playCore.tag != key) return
@@ -215,135 +201,74 @@ private fun SVGAImageView.playCore(
     }
 }
 
-fun SVGAImageView.playSVGA(
-    url: String,
-    loop: Int = 1,
-    callback: PlayCallback? = null
-) {
-    if (url.isEmpty()) {
-        callback?.onPlayFailed("SVGA URL is empty"); return
-    }
+// --- 对外方法：严禁修改参数和名称 ---
+
+fun SVGAImageView.playSVGA(url: String, loop: Int = 1, callback: PlayCallback? = null) {
+    if (url.isEmpty()) { callback?.onPlayFailed("SVGA URL is empty"); return }
     val cacheFile = MediaCacheManager.getSVGACacheFile(AppUtil.appContext, url)
     if (cacheFile.exists() && cacheFile.length() > 0) {
         playCore(cacheFile.absolutePath, loop, null, null, callback, isLocalFile = true)
     } else {
         OkDownloadExt.downloadSingle(url, listener = object : DownloadListener {
             override fun onComplete(file: File) {
-                this@playSVGA.post {
-                    playCore(file.absolutePath, loop, null, null, callback, isLocalFile = true)
-                }
+                this@playSVGA.post { playCore(file.absolutePath, loop, null, null, callback, isLocalFile = true) }
             }
-
             override fun onFailed(error: Throwable?) {
-                this@playSVGA.post {
-                    callback?.onPlayFailed(error?.message)
-                }
+                this@playSVGA.post { callback?.onPlayFailed(error?.message) }
             }
         })
     }
 }
 
-fun SVGAImageView.playSVGAWithKey(
-    url: String,
-    avatarUrl: String,
-    nickName: String,
-    loop: Int = 1,
-    callback: PlayCallback? = null
-) {
-    if (url.isEmpty()) {
-        callback?.onPlayFailed("SVGA URL is empty"); return
-    }
+fun SVGAImageView.playSVGAWithKey(url: String, avatarUrl: String, nickName: String, loop: Int = 1, callback: PlayCallback? = null) {
+    if (url.isEmpty()) { callback?.onPlayFailed("SVGA URL is empty"); return }
     val cacheFile = MediaCacheManager.getSVGACacheFile(AppUtil.appContext, url)
     if (cacheFile.exists() && cacheFile.length() > 0) {
         playCore(cacheFile.absolutePath, loop, avatarUrl, nickName, callback, isLocalFile = true)
     } else {
         OkDownloadExt.downloadSingle(url, listener = object : DownloadListener {
             override fun onComplete(file: File) {
-                this@playSVGAWithKey.post {
-                    playCore(file.absolutePath, loop, avatarUrl, nickName, callback, isLocalFile = true)
-                }
+                this@playSVGAWithKey.post { playCore(file.absolutePath, loop, avatarUrl, nickName, callback, isLocalFile = true) }
             }
-
             override fun onFailed(error: Throwable?) {
-                this@playSVGAWithKey.post {
-                    callback?.onPlayFailed(error?.message)
-                }
+                this@playSVGAWithKey.post { callback?.onPlayFailed(error?.message) }
             }
         })
     }
 }
 
-fun SVGAImageView.playSVGAInputStream(
-    file: File?,
-    avatarUrl: String,
-    nickName: String,
-    loop: Int = 1,
-    callback: PlayCallback? = null,
-    useCache: Boolean = false,
-) {
-    if (file == null) {
-        callback?.onPlayFailed("SVGA file is null"); return
-    }
+fun SVGAImageView.playSVGAInputStream(file: File?, avatarUrl: String, nickName: String, loop: Int = 1, callback: PlayCallback? = null, useCache: Boolean = false) {
+    if (file == null) { callback?.onPlayFailed("SVGA file is null"); return }
     playCore(file.absolutePath, loop, avatarUrl, nickName, callback, isLocalFile = true)
 }
 
-fun SVGAImageView.playAssetsSVGA(
-    assetName: String,
-    loop: Int = 1,
-    callback: PlayCallback? = null
-) {
-    if (assetName.isEmpty()) {
-        callback?.onPlayFailed("SVGA asset name is empty"); return
-    }
+fun SVGAImageView.playAssetsSVGA(assetName: String, loop: Int = 1, callback: PlayCallback? = null) {
+    if (assetName.isEmpty()) { callback?.onPlayFailed("SVGA asset name is empty"); return }
     playCore("assets:$assetName", loop, null, null, callback)
 }
 
-fun SVGAImageView.playSVGAFromInternet(
-    url: String,
-    loop: Int = 1,
-    callback: PlayCallback? = null
-) {
-    if (url.isEmpty()) {
-        callback?.onPlayFailed("SVGA URL is empty"); return
-    }
+fun SVGAImageView.playSVGAFromInternet(url: String, loop: Int = 1, callback: PlayCallback? = null) {
+    if (url.isEmpty()) { callback?.onPlayFailed("SVGA URL is empty"); return }
     playCore(url, loop, null, null, callback)
 }
 
-fun SVGAImageView.playSVGAWithKeyFromInternet(
-    url: String,
-    loop: Int = 1,
-    avatarUrl: String? = "",
-    nickName: String? = null,
-    callback: PlayCallback? = null
-) {
-    if (url.isEmpty()) {
-        callback?.onPlayFailed("SVGA URL is empty"); return
-    }
+fun SVGAImageView.playSVGAWithKeyFromInternet(url: String, loop: Int = 1, avatarUrl: String? = "", nickName: String? = null, callback: PlayCallback? = null) {
+    if (url.isEmpty()) { callback?.onPlayFailed("SVGA URL is empty"); return }
     playCore(url, loop, avatarUrl, nickName, callback)
 }
 
 fun PAGView.playPGA(url: String, callback: PlayCallback? = null) {
-    if (url.isEmpty()) {
-        callback?.onPlayFailed("PAG URL is empty")
-        return
-    }
+    if (url.isEmpty()) { callback?.onPlayFailed("PAG URL is empty"); return }
     val cacheFile = MediaCacheManager.getPagCacheFile(AppUtil.appContext, url)
     if (cacheFile.exists()) {
-        this.post {
-            playPAGInternal(cacheFile, callback)
-        }
+        this.post { playPAGInternal(cacheFile, callback) }
     } else {
         OkDownloadExt.downloadSingle(url, listener = object : DownloadListener {
             override fun onComplete(file: File) {
-                this@playPGA.post {
-                    playPAGInternal(file, callback)
-                }
+                this@playPGA.post { playPAGInternal(file, callback) }
             }
-
             override fun onFailed(error: Throwable?) {
-                this@playPGA.post {
-                    callback?.onPlayFailed(error?.message)
-                }
+                this@playPGA.post { callback?.onPlayFailed(error?.message) }
             }
         })
     }
@@ -355,15 +280,12 @@ private fun PAGView.playPAGInternal(file: File, callback: PlayCallback?) {
         this.composition = pagFile
         this.setRepeatCount(Integer.MAX_VALUE)
         this.addListener(object : PAGView.PAGViewListener {
-            override fun onAnimationStart(view: PAGView?) {
-                callback?.onPlayStart()
-            }
-
+            override fun onAnimationStart(view: PAGView?) { callback?.onPlayStart() }
             override fun onAnimationEnd(view: PAGView?) {
                 callback?.onPlayComplete()
+                removeListener(this)
             }
-
-            override fun onAnimationCancel(view: PAGView?) {}
+            override fun onAnimationCancel(view: PAGView?) { removeListener(this) }
             override fun onAnimationRepeat(view: PAGView?) {}
             override fun onAnimationUpdate(view: PAGView?) {}
         })
@@ -373,105 +295,44 @@ private fun PAGView.playPAGInternal(file: File, callback: PlayCallback?) {
     }
 }
 
-
-fun AnimView.checkMp4Cache(
-    giftMp4Url: String,
-    loop: Int = 1,
-    nickName: String? = "",
-    avatarUrl: String? = "",
-    avatarUrl2: String? = "",
-    callback: PlayCallback? = null
-) {
-    if (TextUtils.isEmpty(giftMp4Url)) {
-        callback?.onPlayFailed("MP4 URL is empty")
-        return
-    }
+fun AnimView.checkMp4Cache(giftMp4Url: String, loop: Int = 1, nickName: String? = "", avatarUrl: String? = "", avatarUrl2: String? = "", callback: PlayCallback? = null) {
+    if (TextUtils.isEmpty(giftMp4Url)) { callback?.onPlayFailed("MP4 URL is empty"); return }
     val targetFile = MediaCacheManager.getVapMp4CacheFile(AppUtil.appContext, giftMp4Url)
     if (targetFile.exists() && targetFile.length() > 0) {
-        this.post {
-            playMP4(targetFile, loop, nickName, avatarUrl, avatarUrl2, callback)
-        }
+        this.post { playMP4(targetFile, loop, nickName, avatarUrl, avatarUrl2, callback) }
     } else {
         startDownLoadFile(giftMp4Url, targetFile, loop, nickName, avatarUrl, avatarUrl2, callback)
     }
 }
 
-
-private fun AnimView.startDownLoadFile(
-    url: String,
-    targetFile: File,
-    loop: Int,
-    nickName: String?,
-    avatarUrl: String?,
-    avatarUrl2: String?,
-    callback: PlayCallback?
-) {
+private fun AnimView.startDownLoadFile(url: String, targetFile: File, loop: Int, nickName: String?, avatarUrl: String?, avatarUrl2: String?, callback: PlayCallback?) {
     OkDownloadExt.downloadSingle(url, listener = object : DownloadListener {
         override fun onComplete(file: File) {
-            this@startDownLoadFile.post {
-                playMP4(file, loop, nickName, avatarUrl, avatarUrl2, callback)
-            }
+            this@startDownLoadFile.post { playMP4(file, loop, nickName, avatarUrl, avatarUrl2, callback) }
         }
-
         override fun onFailed(error: Throwable?) {
-            this@startDownLoadFile.post {
-                callback?.onPlayFailed(error?.message)
-            }
+            this@startDownLoadFile.post { callback?.onPlayFailed(error?.message) }
         }
     })
 }
 
-private fun AnimView.playMP4(
-    file: File,
-    loop: Int,
-    nickName: String?,
-    avatar: String?,
-    avatarUrl2: String?,
-    callback: PlayCallback?
-) {
+private fun AnimView.playMP4(file: File, loop: Int, nickName: String?, avatar: String?, avatarUrl2: String?, callback: PlayCallback?) {
     setLoop(loop)
     setFetchResource(object : IFetchResource {
         override fun fetchImage(resource: Resource, result: (Bitmap?) -> Unit) {
-            if (resource.tag == "tag1" && !avatar.isNullOrEmpty()) {
-                Glide.with(context)
-                    .asBitmap()
-                    .load(avatar)
-                    .into(object : CustomTarget<Bitmap>() {
-                        override fun onResourceReady(
-                            resource: Bitmap,
-                            transition: Transition<in Bitmap>?
-                        ) {
-                            result(resource)
-                        }
+            // 修复点：修正 avatarUrl2 逻辑 Bug
+            val imgUrl = when (resource.tag) {
+                "tag1" -> avatar
+                "tag2" -> avatarUrl2
+                else -> null
+            }
 
-                        override fun onLoadCleared(placeholder: android.graphics.drawable.Drawable?) {
-                            result(null)
-                        }
-
-                        override fun onLoadFailed(errorDrawable: android.graphics.drawable.Drawable?) {
-                            result(null)
-                        }
-                    })
-            } else if (resource.tag == "tag2" && !avatarUrl2.isNullOrEmpty()) {
-                Glide.with(context)
-                    .asBitmap()
-                    .load(avatar)
-                    .into(object : CustomTarget<Bitmap>() {
-                        override fun onResourceReady(
-                            resource: Bitmap,
-                            transition: Transition<in Bitmap>?
-                        ) {
-                            result(resource)
-                        }
-
-                        override fun onLoadCleared(placeholder: android.graphics.drawable.Drawable?) {
-                            result(null)
-                        }
-
-                        override fun onLoadFailed(errorDrawable: android.graphics.drawable.Drawable?) {
-                            result(null)
-                        }
-                    })
+            if (!imgUrl.isNullOrEmpty()) {
+                Glide.with(context).asBitmap().load(imgUrl).into(object : CustomTarget<Bitmap>() {
+                    override fun onResourceReady(res: Bitmap, transition: Transition<in Bitmap>?) { result(res) }
+                    override fun onLoadCleared(placeholder: android.graphics.drawable.Drawable?) { result(null) }
+                    override fun onLoadFailed(errorDrawable: android.graphics.drawable.Drawable?) { result(null) }
+                })
             } else {
                 result(null)
             }
@@ -484,22 +345,14 @@ private fun AnimView.playMP4(
                 result(null)
             }
         }
-
         override fun releaseResource(resources: List<Resource>) {}
     })
     setAnimListener(object : IAnimListener {
-        override fun onVideoStart() {
-            callback?.onPlayStart()
-        }
-
-        override fun onVideoComplete() {
-            callback?.onPlayComplete()
-        }
-
+        override fun onVideoStart() { callback?.onPlayStart() }
+        override fun onVideoComplete() { callback?.onPlayComplete() }
         override fun onFailed(errorType: Int, errorMsg: String?) {
             callback?.onPlayFailed("AnimView error($errorType): $errorMsg")
         }
-
         override fun onVideoDestroy() {}
         override fun onVideoRender(frameIndex: Int, config: AnimConfig?) {}
     })
