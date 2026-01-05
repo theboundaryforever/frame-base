@@ -421,10 +421,6 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
 
     override fun onRemoteAudioStats(stats: RemoteAudioStats?) {
         super.onRemoteAudioStats(stats)
-        VoiceRoomLagMonitor.onAudioStatsUpdate(
-            frozenRate = stats?.frozenRate?.toDouble() ?: return,
-            rtt = stats?.networkTransportDelay ?: return
-        )
 
     }
 
