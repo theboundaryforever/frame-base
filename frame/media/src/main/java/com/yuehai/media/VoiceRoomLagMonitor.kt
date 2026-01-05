@@ -1,64 +1,103 @@
 package com.yuehai.media
 
+import android.app.Activity
 import android.app.ActivityManager
+import android.app.Application
 import android.content.Context
-import android.content.SharedPreferences
 import android.os.*
 import android.util.Log
 import android.util.Printer
 import android.view.Choreographer
-import java.lang.ref.WeakReference
 import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * 全局卡顿监控工具
+ * 核心原理：主线程 Looper 日志监控 + 后台线程主动采样堆栈
+ */
 object VoiceRoomLagMonitor {
 
     private const val TAG = "LagMonitor"
-    private const val PREF_NAME = "VoiceRoomLagMonitorPrefs"
 
     data class Config(
-        var uiJankMs: Long = 200L,          // 判定为单帧掉帧
-        var uiCriticalMs: Long = 500L,      // 判定为严重卡顿，抓取堆栈
-        var audioFrozenRate: Double = 10.0,
-        var alertCooldownMs: Long = 5000L,  // 告警冷却
-        var looperBlockMs: Long = 300L,     // Looper单次消息耗时阈值
-        var sampleIntervalMs: Long = 100L   // 采样间隔
+        var uiCriticalMs: Long = 300L,        // 判定卡顿的阈值 (ms)
+        var sampleIntervalMs: Long = 80L,    // 堆栈采样频率 (ms)
+        var alertCooldownMs: Long = 3000L,   // 同一 Activity 告警冷却 (ms)
+        var enabled: Boolean = true          // 总开关
     )
 
-    @Volatile
     private var currentConfig = Config()
     private val isMonitoring = AtomicBoolean(false)
-    private var contextRef: WeakReference<Context>? = null
-    private var prefs: SharedPreferences? = null
+    private var application: Application? = null
 
-    // 堆栈采样相关
+    // 状态记录
+    @Volatile
+    private var topActivityName: String = "Unknown"
+    @Volatile
+    private var looperMsgStartTime = 0L
+    private val lastReportTimes = mutableMapOf<String, Long>()
+
+    // 堆栈缓存：Long 为时间戳，String 为堆栈内容
     private val stackCache = Collections.synchronizedList(mutableListOf<Pair<Long, String>>())
-    private const val MAX_STACK_CACHE = 10
+    private const val MAX_STACK_CACHE = 20
 
-    // 线程处理
+    // 线程模型
     private val mainHandler = Handler(Looper.getMainLooper())
     private var analyzerThread: HandlerThread? = null
     private var analyzerHandler: Handler? = null
 
-    fun init(context: Context) {
-        contextRef = WeakReference(context.applicationContext)
-        prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    /**
+     * 在 Application.onCreate 中初始化
+     */
+    fun install(app: Application, config: Config = Config()) {
+        this.application = app
+        this.currentConfig = config
+
+        app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+            private var startedActivityCount = 0
+
+            override fun onActivityResumed(activity: Activity) {
+                topActivityName = activity.javaClass.simpleName
+            }
+
+            override fun onActivityStarted(activity: Activity) {
+                startedActivityCount++
+                if (startedActivityCount == 1) start()
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                startedActivityCount--
+                if (startedActivityCount == 0) stop()
+            }
+
+            override fun onActivityCreated(a: Activity, s: Bundle?) {}
+            override fun onActivityPaused(a: Activity) {}
+            override fun onActivitySaveInstanceState(a: Activity, o: Bundle) {}
+            override fun onActivityDestroyed(a: Activity) {}
+        })
+
+        if (config.enabled) start()
     }
 
-    fun start() {
-        if (!isMonitoring.compareAndSet(false, true)) return
-        ensureAnalyzerThread()
+    private fun start() {
+        if (!currentConfig.enabled || !isMonitoring.compareAndSet(false, true)) return
 
-        // 1. 开启主线程 Looper 监控
+        ensureAnalyzerThread()
         Looper.getMainLooper().setMessageLogging(looperPrinter)
 
-        // 2. 开启 Choreographer 帧率监控
-        mainHandler.post { Choreographer.getInstance().postFrameCallback(frameCallback) }
-
-        // 3. 启动后台定时采样堆栈
+        // 启动后台采样循环
         startStackSampler()
+        Log.i(TAG, ">>> 卡顿监控已启动 (阈值: ${currentConfig.uiCriticalMs}ms)")
+    }
 
-        Log.i(TAG, "LagMonitor Started")
+    private fun stop() {
+        if (!isMonitoring.compareAndSet(true, false)) return
+        Looper.getMainLooper().setMessageLogging(null)
+        analyzerHandler?.removeCallbacksAndMessages(null)
+        analyzerThread?.quitSafely()
+        analyzerThread = null
+        analyzerHandler = null
+        Log.i(TAG, ">>> 卡顿监控已停止")
     }
 
     private fun ensureAnalyzerThread() {
@@ -68,137 +107,109 @@ object VoiceRoomLagMonitor {
         }
     }
 
+    /**
+     * 后台循环采样：每隔固定时间抓取一次主线程堆栈
+     */
     private fun startStackSampler() {
         analyzerHandler?.post(object : Runnable {
             override fun run() {
-                if (isMonitoring.get()) {
-                    captureMainThreadStack()
-                    analyzerHandler?.postDelayed(this, currentConfig.sampleIntervalMs)
+                if (!isMonitoring.get()) return
+
+                // 1. 抓取当前主线程堆栈
+                val stack = captureCurrentStack()
+
+                // 2. 存入环形缓存
+                synchronized(stackCache) {
+                    if (stackCache.size >= MAX_STACK_CACHE) stackCache.removeAt(0)
+                    stackCache.add(SystemClock.uptimeMillis() to stack)
                 }
+
+                // 3. 主动侦查：如果当前消息执行时间已经超过阈值，且还没结束，立即上报
+                val startTime = looperMsgStartTime
+                if (startTime != 0L) {
+                    val diff = SystemClock.uptimeMillis() - startTime
+                    if (diff > currentConfig.uiCriticalMs) {
+                        reportLag("LONG_RUNNING_TASK", diff, stack)
+                        // 重置时间防止同一条消息重复触发（直到下一条消息开始）
+                        looperMsgStartTime = 0L
+                    }
+                }
+
+                analyzerHandler?.postDelayed(this, currentConfig.sampleIntervalMs)
             }
         })
     }
 
-    // ---------------- 核心逻辑：采样与提取 ----------------
-
-    private fun captureMainThreadStack() {
+    private fun captureCurrentStack(): String {
         val stackTrace = Looper.getMainLooper().thread.stackTrace
-        val formatted = stackTrace.take(20).joinToString("\n") { "  at $it" }
-
-        synchronized(stackCache) {
-            if (stackCache.size >= MAX_STACK_CACHE) {
-                stackCache.removeAt(0)
+        return stackTrace.take(30) // 抓取深度30层
+            .filter { !it.className.startsWith("java.lang.reflect") && !it.className.startsWith("dalvik.system") }
+            .joinToString("\n") { element ->
+                // 重点标记业务代码
+                val isAppCode = element.className.startsWith("com.yuehai") // 替换为你的真实包名前缀
+                val prefix = if (isAppCode) " 🔥 -> " else "    "
+                "$prefix at ${element.className}.${element.methodName}(${element.fileName}:${element.lineNumber})"
             }
-            stackCache.add(SystemClock.uptimeMillis() to formatted)
-        }
     }
 
     /**
-     * 获取最近一次卡顿期间最相关的堆栈
+     * Looper 消息监听器
      */
-    private fun getRelevantStack(startTime: Long, endTime: Long): String {
-        synchronized(stackCache) {
-            // 过滤出落在卡顿时间区间的堆栈记录
-            val relevant = stackCache.filter { it.first in startTime..endTime }
-            return if (relevant.isNotEmpty()) {
-                // 返回最后一次记录，通常最接近卡顿卡住的位置
-                "Captured during lag:\n${relevant.last().second}"
-            } else {
-                "No stack trace captured during the lag interval."
-            }
-        }
-    }
-
-    // ---------------- 监控接口 ----------------
-
-    private var looperMsgStartTime = 0L
-
     private val looperPrinter = Printer { msg ->
-        if (!isMonitoring.get()) return@Printer
         if (msg.startsWith(">>>>>")) {
             looperMsgStartTime = SystemClock.uptimeMillis()
         } else if (msg.startsWith("<<<<<")) {
-            val endTime = SystemClock.uptimeMillis()
-            val cost = endTime - looperMsgStartTime
-            if (cost >= currentConfig.looperBlockMs) {
-                val stack = getRelevantStack(looperMsgStartTime, endTime)
-                processLagAsync(LagType.LOOPER_BLOCK, cost, stack)
-            }
-        }
-    }
-
-    private var lastFrameTimeNanos = 0L
-    private val frameCallback = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) {
-            if (!isMonitoring.get()) return
-            if (lastFrameTimeNanos != 0L) {
-                val durationMs = (frameTimeNanos - lastFrameTimeNanos) / 1_000_000
-                if (durationMs >= currentConfig.uiCriticalMs) {
-                    val endTime = SystemClock.uptimeMillis()
-                    val stack = getRelevantStack(endTime - durationMs, endTime)
-                    processLagAsync(LagType.UI, durationMs, stack)
+            val startTime = looperMsgStartTime
+            if (startTime != 0L) {
+                val duration = SystemClock.uptimeMillis() - startTime
+                if (duration > currentConfig.uiCriticalMs) {
+                    // 消息结束时，发现超时，从缓存中取最匹配的堆栈
+                    val stack = getBestStackFromCache(startTime, SystemClock.uptimeMillis())
+                    reportLag("LOOPER_BLOCK", duration, stack)
                 }
             }
-            lastFrameTimeNanos = frameTimeNanos
-            Choreographer.getInstance().postFrameCallback(this)
+            looperMsgStartTime = 0L
         }
     }
 
-    // ---------------- 报告处理 ----------------
-
-    private fun processLagAsync(type: LagType, duration: Long, stack: String) {
-        if (!canReport(type)) return
-        updateLastReportTime(type)
-
-        analyzerHandler?.post {
-            val mem = getMemorySnapshot()
-            val report = """
-                [Lag Detected]
-                Type: $type
-                Duration: ${duration}ms
-                Memory: $mem
-                Stack Trace:
-                $stack
-            """.trimIndent()
-
-            Log.e(TAG, report)
-
-            // 外部回调
-            onLagEventDetected?.let { callback ->
-                mainHandler.post { callback.invoke(type, "${duration}ms") }
-            }
+    private fun getBestStackFromCache(start: Long, end: Long): String {
+        synchronized(stackCache) {
+            // 找到卡顿期间抓取到的最后一个堆栈，通常最接近耗时方法
+            return stackCache.lastOrNull { it.first in start..end }?.second
+                ?: "No relevant stack trace captured."
         }
     }
 
-    // ---------------- 常规工具 ----------------
+    private fun reportLag(type: String, duration: Long, stack: String) {
+        val now = System.currentTimeMillis()
+        val lastTime = lastReportTimes[topActivityName] ?: 0L
+        if (now - lastTime < currentConfig.alertCooldownMs) return
 
-    private fun getMemorySnapshot(): String {
-        val context = contextRef?.get() ?: return "N/A"
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val mi = ActivityManager.MemoryInfo()
-        am.getMemoryInfo(mi)
-        return "Free:${mi.availMem / 1024 / 1024}MB / Total:${mi.totalMem / 1024 / 1024}MB"
+        lastReportTimes[topActivityName] = now
+
+        val memInfo = getMemoryInfo()
+
+        // 使用 Log.e 以便在 Logcat 中以红色突出显示
+        Log.e(TAG, """
+            
+            ┌────── ⚠️ 卡顿检测报告 ──────────────────────────────────
+            │ 页面: $topActivityName
+            │ 类型: $type
+            │ 耗时: ${duration}ms (阈值: ${currentConfig.uiCriticalMs}ms)
+            │ 内存: $memInfo
+            ├────── 关键堆栈 (🔥 为业务代码) ──────────────────────────
+            $stack
+            └──────────────────────────────────────────────────────
+        """.trimIndent())
     }
 
-    private fun canReport(type: LagType): Boolean {
-        val last = prefs?.getLong(type.name, 0L) ?: 0L
-        return System.currentTimeMillis() - last >= currentConfig.alertCooldownMs
-    }
-
-    private fun updateLastReportTime(type: LagType) {
-        prefs?.edit()?.putLong(type.name, System.currentTimeMillis())?.apply()
-    }
-
-    enum class LagType { UI, LOOPER_BLOCK, AUDIO }
-
-    var onLagEventDetected: ((LagType, String) -> Unit)? = null
-
-    fun stop() {
-        if (!isMonitoring.compareAndSet(true, false)) return
-        Looper.getMainLooper().setMessageLogging(null)
-        analyzerHandler?.removeCallbacksAndMessages(null)
-        analyzerThread?.quitSafely()
-        analyzerThread = null
-        analyzerHandler = null
+    private fun getMemoryInfo(): String {
+        val app = application ?: return "N/A"
+        return try {
+            val am = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val mi = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mi)
+            "可用:${mi.availMem / 1024 / 1024}MB / 总共:${mi.totalMem / 1024 / 1024}MB (低内存模式:${mi.lowMemory})"
+        } catch (e: Exception) { "Error" }
     }
 }
