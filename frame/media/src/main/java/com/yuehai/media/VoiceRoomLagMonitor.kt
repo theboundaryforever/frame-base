@@ -8,6 +8,7 @@ import android.util.Log
 import android.util.Printer
 import android.view.Choreographer
 import java.lang.ref.WeakReference
+import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
 
 object VoiceRoomLagMonitor {
@@ -15,68 +16,29 @@ object VoiceRoomLagMonitor {
     private const val TAG = "LagMonitor"
     private const val PREF_NAME = "VoiceRoomLagMonitorPrefs"
 
-    // ---------------- Config ----------------
-
     data class Config(
-        var uiJankMs: Long = 200L,
-        var uiCriticalMs: Long = 500L,
+        var uiJankMs: Long = 200L,          // 判定为单帧掉帧
+        var uiCriticalMs: Long = 500L,      // 判定为严重卡顿，抓取堆栈
         var audioFrozenRate: Double = 10.0,
-        var alertCooldownMs: Long = 3000L,
-        var continuousJankCount: Int = 3,
-        var continuousWindowMs: Long = 1000L,
-        var enableLooperBlock: Boolean = true,
-        var looperBlockMs: Long = 300L,
-        var looperSevereMs: Long = 1000L
+        var alertCooldownMs: Long = 5000L,  // 告警冷却
+        var looperBlockMs: Long = 300L,     // Looper单次消息耗时阈值
+        var sampleIntervalMs: Long = 100L   // 采样间隔
     )
 
     @Volatile
     private var currentConfig = Config()
-
-    fun updateConfig(config: Config) {
-        currentConfig = config
-        Log.i(TAG, "Config Updated: $config")
-    }
-
-    // ---------------- State ----------------
-
     private val isMonitoring = AtomicBoolean(false)
     private var contextRef: WeakReference<Context>? = null
     private var prefs: SharedPreferences? = null
 
-    private var lastFrameTimeNanos = 0L
-    private var jankCountInWindow = 0
-    private var windowStartTime = 0L
-    private var looperMsgStartTime = 0L
+    // 堆栈采样相关
+    private val stackCache = Collections.synchronizedList(mutableListOf<Pair<Long, String>>())
+    private const val MAX_STACK_CACHE = 10
 
-    var isAppInBackground = false
-        set(value) {
-            field = value
-            if (value) stop()
-        }
-
-    var onLagEventDetected: ((LagType, String) -> Unit)? = null
-
-    enum class LagType {
-        UI,
-        CONTINUOUS_UI,
-        AUDIO,
-        LOOPER_BLOCK
-    }
-
-    // ---------------- Threads ----------------
-
+    // 线程处理
     private val mainHandler = Handler(Looper.getMainLooper())
     private var analyzerThread: HandlerThread? = null
     private var analyzerHandler: Handler? = null
-
-    private fun ensureAnalyzerThread() {
-        if (analyzerThread == null) {
-            analyzerThread = HandlerThread("LagAnalyzer").apply { start() }
-            analyzerHandler = Handler(analyzerThread!!.looper)
-        }
-    }
-
-    // ---------------- Init ----------------
 
     fun init(context: Context) {
         contextRef = WeakReference(context.applicationContext)
@@ -85,160 +47,158 @@ object VoiceRoomLagMonitor {
 
     fun start() {
         if (!isMonitoring.compareAndSet(false, true)) return
+        ensureAnalyzerThread()
 
-        lastFrameTimeNanos = 0L
-        jankCountInWindow = 0
-        windowStartTime = 0L
-        looperMsgStartTime = 0L
+        // 1. 开启主线程 Looper 监控
+        Looper.getMainLooper().setMessageLogging(looperPrinter)
 
+        // 2. 开启 Choreographer 帧率监控
         mainHandler.post { Choreographer.getInstance().postFrameCallback(frameCallback) }
 
-        if (currentConfig.enableLooperBlock) {
-            Looper.getMainLooper().setMessageLogging(looperPrinter)
+        // 3. 启动后台定时采样堆栈
+        startStackSampler()
+
+        Log.i(TAG, "LagMonitor Started")
+    }
+
+    private fun ensureAnalyzerThread() {
+        if (analyzerThread == null) {
+            analyzerThread = HandlerThread("LagAnalyzer").apply { start() }
+            analyzerHandler = Handler(analyzerThread!!.looper)
         }
     }
 
-    fun stop() {
-        if (!isMonitoring.compareAndSet(true, false)) return
-
-        mainHandler.post { Choreographer.getInstance().removeFrameCallback(frameCallback) }
-
-        if (currentConfig.enableLooperBlock) {
-            Looper.getMainLooper().setMessageLogging(null)
-        }
-
-        analyzerHandler?.removeCallbacksAndMessages(null)
-        analyzerThread?.quitSafely()
-        analyzerThread = null
-        analyzerHandler = null
+    private fun startStackSampler() {
+        analyzerHandler?.post(object : Runnable {
+            override fun run() {
+                if (isMonitoring.get()) {
+                    captureMainThreadStack()
+                    analyzerHandler?.postDelayed(this, currentConfig.sampleIntervalMs)
+                }
+            }
+        })
     }
 
-    // ---------------- Frame Monitor ----------------
+    // ---------------- 核心逻辑：采样与提取 ----------------
 
+    private fun captureMainThreadStack() {
+        val stackTrace = Looper.getMainLooper().thread.stackTrace
+        val formatted = stackTrace.take(20).joinToString("\n") { "  at $it" }
+
+        synchronized(stackCache) {
+            if (stackCache.size >= MAX_STACK_CACHE) {
+                stackCache.removeAt(0)
+            }
+            stackCache.add(SystemClock.uptimeMillis() to formatted)
+        }
+    }
+
+    /**
+     * 获取最近一次卡顿期间最相关的堆栈
+     */
+    private fun getRelevantStack(startTime: Long, endTime: Long): String {
+        synchronized(stackCache) {
+            // 过滤出落在卡顿时间区间的堆栈记录
+            val relevant = stackCache.filter { it.first in startTime..endTime }
+            return if (relevant.isNotEmpty()) {
+                // 返回最后一次记录，通常最接近卡顿卡住的位置
+                "Captured during lag:\n${relevant.last().second}"
+            } else {
+                "No stack trace captured during the lag interval."
+            }
+        }
+    }
+
+    // ---------------- 监控接口 ----------------
+
+    private var looperMsgStartTime = 0L
+
+    private val looperPrinter = Printer { msg ->
+        if (!isMonitoring.get()) return@Printer
+        if (msg.startsWith(">>>>>")) {
+            looperMsgStartTime = SystemClock.uptimeMillis()
+        } else if (msg.startsWith("<<<<<")) {
+            val endTime = SystemClock.uptimeMillis()
+            val cost = endTime - looperMsgStartTime
+            if (cost >= currentConfig.looperBlockMs) {
+                val stack = getRelevantStack(looperMsgStartTime, endTime)
+                processLagAsync(LagType.LOOPER_BLOCK, cost, stack)
+            }
+        }
+    }
+
+    private var lastFrameTimeNanos = 0L
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!isMonitoring.get()) return
-
             if (lastFrameTimeNanos != 0L) {
                 val durationMs = (frameTimeNanos - lastFrameTimeNanos) / 1_000_000
-                val now = SystemClock.uptimeMillis()
-
-                if (durationMs > currentConfig.uiJankMs) {
-
-                    if (durationMs >= currentConfig.uiCriticalMs) {
-                        processLagAsync(LagType.UI, durationMs, 0, 0.0)
-                    }
-
-                    if (windowStartTime == 0L || now - windowStartTime > currentConfig.continuousWindowMs) {
-                        windowStartTime = now
-                        jankCountInWindow = 1
-                    } else {
-                        jankCountInWindow++
-                        if (jankCountInWindow >= currentConfig.continuousJankCount) {
-                            processLagAsync(LagType.CONTINUOUS_UI, durationMs, 0, 0.0)
-                            jankCountInWindow = 0
-                            windowStartTime = 0L
-                        }
-                    }
+                if (durationMs >= currentConfig.uiCriticalMs) {
+                    val endTime = SystemClock.uptimeMillis()
+                    val stack = getRelevantStack(endTime - durationMs, endTime)
+                    processLagAsync(LagType.UI, durationMs, stack)
                 }
             }
-
             lastFrameTimeNanos = frameTimeNanos
             Choreographer.getInstance().postFrameCallback(this)
         }
     }
 
-    // ---------------- Looper Block ----------------
+    // ---------------- 报告处理 ----------------
 
-    private val looperPrinter = Printer { msg ->
-        if (!isMonitoring.get()) return@Printer
-
-        when {
-            msg.startsWith(">>>>>") -> looperMsgStartTime = SystemClock.uptimeMillis()
-            msg.startsWith("<<<<<") -> {
-                val cost = SystemClock.uptimeMillis() - looperMsgStartTime
-                if (cost >= currentConfig.looperBlockMs) {
-                    processLagAsync(LagType.LOOPER_BLOCK, cost, 0, 0.0)
-                }
-            }
-        }
-    }
-
-    // ---------------- Audio ----------------
-
-    fun onAudioStatsUpdate(frozenRate: Double, rtt: Int) {
-        if (!isMonitoring.get()) return
-        if (frozenRate > currentConfig.audioFrozenRate) {
-            processLagAsync(LagType.AUDIO, 0L, rtt, frozenRate)
-        }
-    }
-
-    // ---------------- Core Report ----------------
-
-    private fun processLagAsync(type: LagType, uiDuration: Long, rtt: Int, frozenRate: Double) {
+    private fun processLagAsync(type: LagType, duration: Long, stack: String) {
         if (!canReport(type)) return
         updateLastReportTime(type)
 
-        ensureAnalyzerThread()
         analyzerHandler?.post {
-            if (!isMonitoring.get()) return@post
-
-            val report = StringBuilder()
             val mem = getMemorySnapshot()
+            val report = """
+                [Lag Detected]
+                Type: $type
+                Duration: ${duration}ms
+                Memory: $mem
+                Stack Trace:
+                $stack
+            """.trimIndent()
 
-            when (type) {
-                LagType.UI -> {
-                    report.append("严重 UI 卡顿: ${uiDuration}ms\n")
-                    if (uiDuration >= 1000) report.append(getMainThreadStackTrace())
-                }
-                LagType.CONTINUOUS_UI -> report.append("持续 UI 掉帧 (${currentConfig.continuousJankCount})\n")
-                LagType.LOOPER_BLOCK -> {
-                    report.append("主线程 Looper 阻塞: ${uiDuration}ms\n")
-                    if (uiDuration >= currentConfig.looperSevereMs) report.append(getMainThreadStackTrace())
-                }
-                LagType.AUDIO -> report.append("语音卡顿: Frozen=$frozenRate%, RTT=${rtt}ms\n")
-            }
+            Log.e(TAG, report)
 
-            Log.e(TAG, "[$type]\n$report\nMem:$mem")
-
+            // 外部回调
             onLagEventDetected?.let { callback ->
-                mainHandler.post {
-                    callback.invoke(
-                        type,
-                        if (type == LagType.AUDIO) "$frozenRate%" else "${uiDuration}ms"
-                    )
-                }
+                mainHandler.post { callback.invoke(type, "${duration}ms") }
             }
         }
     }
 
-    // ---------------- Utils ----------------
+    // ---------------- 常规工具 ----------------
 
     private fun getMemorySnapshot(): String {
         val context = contextRef?.get() ?: return "N/A"
-        return try {
-            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val mi = ActivityManager.MemoryInfo()
-            am.getMemoryInfo(mi)
-            "${(mi.totalMem - mi.availMem) * 100 / mi.totalMem}% (Free:${mi.availMem / 1048576}M)"
-        } catch (e: Exception) { "Err" }
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val mi = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        return "Free:${mi.availMem / 1024 / 1024}MB / Total:${mi.totalMem / 1024 / 1024}MB"
     }
-
-    private fun getMainThreadStackTrace(): String {
-        return Looper.getMainLooper().thread.stackTrace
-            .take(15)
-            .joinToString("\n") { "  at $it" }
-    }
-
-    // ---------------- Persistent Cooldown ----------------
 
     private fun canReport(type: LagType): Boolean {
         val last = prefs?.getLong(type.name, 0L) ?: 0L
-        val cooldown = currentConfig.alertCooldownMs
-        return System.currentTimeMillis() - last >= cooldown
+        return System.currentTimeMillis() - last >= currentConfig.alertCooldownMs
     }
 
     private fun updateLastReportTime(type: LagType) {
         prefs?.edit()?.putLong(type.name, System.currentTimeMillis())?.apply()
+    }
+
+    enum class LagType { UI, LOOPER_BLOCK, AUDIO }
+
+    var onLagEventDetected: ((LagType, String) -> Unit)? = null
+
+    fun stop() {
+        if (!isMonitoring.compareAndSet(true, false)) return
+        Looper.getMainLooper().setMessageLogging(null)
+        analyzerHandler?.removeCallbacksAndMessages(null)
+        analyzerThread?.quitSafely()
+        analyzerThread = null
+        analyzerHandler = null
     }
 }
