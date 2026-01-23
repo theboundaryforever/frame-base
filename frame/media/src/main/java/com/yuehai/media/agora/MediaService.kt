@@ -362,53 +362,86 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
      */
     private val speakingLock = Any()
 
-    val TAG_RTC_VOLUME = "onAudioVolumeIndication"
+    private var lastDispatchTime = 0L
+    private var lastStableChangeTime = 0L
+
+    private val TAG = "Speaking Volume"
+
+    private val VOLUME_THRESHOLD = 12
+    private val STABLE_WINDOW = 150L
+    private val MIN_DISPATCH_INTERVAL = 400L
+    private var pendingUidSet: Set<Int> = emptySet()
 
     override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
+        val now = System.currentTimeMillis()
+        val currentUids = HashSet<Int>()
 
-        super.onAudioVolumeIndication(speakers, totalVolume)
-
-        if (speakers.isNullOrEmpty()) {
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+        speakers?.forEach { info ->
+            if (info != null && info.volume > VOLUME_THRESHOLD) {
+                val uid = if (info.uid == 0) selfUid else info.uid
+                currentUids.add(uid)
             }
-
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(emptySet())
-            }
-            return
         }
 
-        Dispatcher.highExecutor.submit({
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+        var dispatchSet: HashSet<Int>? = null
+        var dispatchReason: String? = null
 
-                speakers.forEach { info ->
-                    if (info != null && info.volume > 0) {
-                        val uid = if (info.uid == 0) selfUid else info.uid
-                        speakingUidSet.add(uid)
-                        Log.v(TAG_RTC_VOLUME, "User speaking: UID=$uid, Volume=${info.volume}")
-                    }
+        synchronized(speakingLock) {
+            if (currentUids != pendingUidSet) {
+                pendingUidSet = currentUids
+                lastStableChangeTime = now
+            }
+
+            val timeSinceLastDispatch = now - lastDispatchTime
+            val timeSinceStable = now - lastStableChangeTime
+
+            val shouldDispatch = when {
+
+                // ✅【新增】首次有人说话：必须立刻亮灯
+                speakingUidSet.isEmpty() && pendingUidSet.isNotEmpty() -> {
+                    dispatchReason = "first speaker"
+                    true
                 }
 
+                // 全部静音：立即熄灯
+                pendingUidSet.isEmpty() && speakingUidSet.isNotEmpty() -> {
+                    dispatchReason = "all silent"
+                    true
+                }
 
+                // 稳定变化
+                pendingUidSet != speakingUidSet &&
+                        timeSinceStable >= STABLE_WINDOW &&
+                        timeSinceLastDispatch >= MIN_DISPATCH_INTERVAL -> {
+                    dispatchReason = "stable change (${timeSinceStable}ms)"
+                    true
+                }
+
+                // keep alive
+                pendingUidSet.isNotEmpty() &&
+                        pendingUidSet == speakingUidSet &&
+                        timeSinceLastDispatch >= MIN_DISPATCH_INTERVAL -> {
+                    dispatchReason = "keep alive"
+                    true
+                }
+
+                else -> false
             }
 
-            val currentSpeakingUsers = synchronized(speakingLock) {
-                speakingUidSet.toHashSet()
-            }
 
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(currentSpeakingUsers)
+            if (shouldDispatch) {
+                speakingUidSet.clear()
+                speakingUidSet.addAll(pendingUidSet)
+                lastDispatchTime = now
+                dispatchSet = HashSet(speakingUidSet)
             }
+        }
 
-            Log.i(
-                TAG_RTC_VOLUME,
-                "Dispatched onUsersSpeaking event. Total speaking UIDs: ${
-                    currentSpeakingUsers.joinToString(", ")
-                }"
-            )
-        })
+        // 4. 锁外分发，避免阻塞 RTC 线程
+        dispatchSet?.let { set ->
+            Log.d(TAG, "🚀 dispatch: $set | reason: $dispatchReason")
+            mediaRtcListeners.dispatch { it.onUsersSpeaking(set) }
+        }
     }
 
     /**
