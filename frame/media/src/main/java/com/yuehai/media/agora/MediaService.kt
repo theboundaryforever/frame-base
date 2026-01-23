@@ -1,6 +1,7 @@
 package com.yuehai.media.agora
 
 
+import android.os.SystemClock
 import android.util.Log
 import com.adealik.frame.mvvm.util.removeUiCallbacks
 import com.adealik.frame.mvvm.util.runOnUiThread
@@ -360,55 +361,103 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
      *  * 瞬时音量最高的远端用户静音后 20 秒，远端的音量提示回调中将不再包含该用户；如果远端所有用户都将自己静音，20 秒后 SDK 停止报告远端用户的音量提示回调
      * 可用来暂时判断当前说话成员
      */
+    private  val TAG = "MicSeatComp"
+
+    private  val VOLUME_THRESHOLD = 5
+    private  val SILENT_HOLD_MS = 400L
+    private  val STABLE_WINDOW = 150L
+    private  val MIN_DISPATCH_INTERVAL = 400L
+
     private val speakingLock = Any()
 
-    val TAG_RTC_VOLUME = "onAudioVolumeIndication"
+    private var pendingUidSet = HashSet<Int>()
 
-    override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
+    private val lastSpeakingTimeMap = HashMap<Int, Long>()
 
-        super.onAudioVolumeIndication(speakers, totalVolume)
+    private var lastStableChangeTime = 0L
+    private var lastDispatchTime = 0L
 
-        if (speakers.isNullOrEmpty()) {
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+
+    override fun onAudioVolumeIndication(
+        speakers: Array<out AudioVolumeInfo>?,
+        totalVolume: Int
+    ) {
+        val now = SystemClock.elapsedRealtime()
+
+        val frameActiveUids = HashSet<Int>()
+        speakers?.forEach { info ->
+            if (info != null && info.volume >= VOLUME_THRESHOLD) {
+                val uid = if (info.uid == 0) selfUid else info.uid
+                frameActiveUids.add(uid)
+                lastSpeakingTimeMap[uid] = now
+                Log.d(TAG, "🎤 volume uid=$uid vol=${info.volume}")
             }
-
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(emptySet())
-            }
-            return
         }
 
-        Dispatcher.highExecutor.submit({
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+        val currentUids = HashSet<Int>()
+        for ((uid, lastTime) in lastSpeakingTimeMap) {
+            if (now - lastTime <= SILENT_HOLD_MS) {
+                currentUids.add(uid)
+            }
+        }
 
-                speakers.forEach { info ->
-                    if (info != null && info.volume > 0) {
-                        val uid = if (info.uid == 0) selfUid else info.uid
-                        speakingUidSet.add(uid)
-                        Log.v(TAG_RTC_VOLUME, "User speaking: UID=$uid, Volume=${info.volume}")
-                    }
+        var dispatchSet: Set<Int>? = null
+        var dispatchReason = ""
+
+        synchronized(speakingLock) {
+
+            if (currentUids != pendingUidSet) {
+                pendingUidSet = HashSet(currentUids)
+                lastStableChangeTime = now
+            }
+
+            val timeSinceLastDispatch = now - lastDispatchTime
+            val timeSinceStable = now - lastStableChangeTime
+
+            val shouldDispatch = when {
+
+                speakingUidSet.isEmpty() && pendingUidSet.isNotEmpty() -> {
+                    dispatchReason = "first speaker"
+                    true
                 }
 
+                pendingUidSet.isEmpty() && speakingUidSet.isNotEmpty() -> {
+                    dispatchReason = "all silent"
+                    true
+                }
 
+                pendingUidSet != speakingUidSet &&
+                        timeSinceStable >= STABLE_WINDOW &&
+                        timeSinceLastDispatch >= MIN_DISPATCH_INTERVAL -> {
+                    dispatchReason = "stable change ${timeSinceStable}ms"
+                    true
+                }
+
+                // ✅ 保活刷新
+                pendingUidSet.isNotEmpty() &&
+                        pendingUidSet == speakingUidSet &&
+                        timeSinceLastDispatch >= MIN_DISPATCH_INTERVAL -> {
+                    dispatchReason = "keep alive"
+                    true
+                }
+
+                else -> false
             }
 
-            val currentSpeakingUsers = synchronized(speakingLock) {
-                speakingUidSet.toHashSet()
+            if (shouldDispatch) {
+                speakingUidSet.clear()
+                speakingUidSet.addAll(pendingUidSet)
+                lastDispatchTime = now
+                dispatchSet = HashSet(speakingUidSet)
             }
+        }
 
+        dispatchSet?.let { set ->
+            Log.d(TAG, "🚀 dispatch=$set reason=$dispatchReason")
             mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(currentSpeakingUsers)
+                it.onUsersSpeaking(set)
             }
-
-            Log.i(
-                TAG_RTC_VOLUME,
-                "Dispatched onUsersSpeaking event. Total speaking UIDs: ${
-                    currentSpeakingUsers.joinToString(", ")
-                }"
-            )
-        })
+        }
     }
 
     /**
