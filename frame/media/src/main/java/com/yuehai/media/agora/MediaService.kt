@@ -361,54 +361,44 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
      * 可用来暂时判断当前说话成员
      */
     private val speakingLock = Any()
-
-    val TAG_RTC_VOLUME = "onAudioVolumeIndication"
+    private var lastDispatchTime = 0L // 记录上一次分发的时间戳
+    private val MIN_DISPATCH_INTERVAL = 400L // 强制最小分发间隔（毫秒）
 
     override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
+        val currentTime = System.currentTimeMillis()
 
-        super.onAudioVolumeIndication(speakers, totalVolume)
-
-        if (speakers.isNullOrEmpty()) {
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+        val tempUids = hashSetOf<Int>()
+        if (!speakers.isNullOrEmpty()) {
+            speakers.forEach { info ->
+                if (info != null && info.volume > 10) {
+                    val uid = if (info.uid == 0) selfUid else info.uid
+                    tempUids.add(uid)
+                }
             }
-
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(emptySet())
-            }
-            return
         }
 
-        Dispatcher.highExecutor.submit({
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+        synchronized(speakingLock) {
 
-                speakers.forEach { info ->
-                    if (info != null && info.volume > 0) {
-                        val uid = if (info.uid == 0) selfUid else info.uid
-                        speakingUidSet.add(uid)
-                        Log.v(TAG_RTC_VOLUME, "User speaking: UID=$uid, Volume=${info.volume}")
+            val isChanged = (tempUids != speakingUidSet)
+
+            val isTimeExpired = (currentTime - lastDispatchTime >= MIN_DISPATCH_INTERVAL)
+
+
+            if (isChanged || (tempUids.isNotEmpty() && isTimeExpired)) {
+
+                speakingUidSet.clear()
+                speakingUidSet.addAll(tempUids)
+                lastDispatchTime = currentTime
+
+                val dispatchSet = HashSet(speakingUidSet)
+
+                Dispatcher.highExecutor.submit {
+                    mediaRtcListeners.dispatch {
+                        it.onUsersSpeaking(dispatchSet)
                     }
                 }
-
-
             }
-
-            val currentSpeakingUsers = synchronized(speakingLock) {
-                speakingUidSet.toHashSet()
-            }
-
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(currentSpeakingUsers)
-            }
-
-            Log.i(
-                TAG_RTC_VOLUME,
-                "Dispatched onUsersSpeaking event. Total speaking UIDs: ${
-                    currentSpeakingUsers.joinToString(", ")
-                }"
-            )
-        })
+        }
     }
 
     /**
