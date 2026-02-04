@@ -156,7 +156,7 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
                 ?: throw IllegalStateException("RtcEngine.create(config) 返回 null，请检查 AppId/Context/EventHandler 配置")
 
             engine.setChannelProfile(CHANNEL_PROFILE_LIVE_BROADCASTING)
-            engine.enableAudioVolumeIndication(1000, 3, false)
+            engine.enableAudioVolumeIndication(300, 3, false)
             agoraRtcEngine = engine
             engine
         }
@@ -364,69 +364,88 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
     private val speakingLock = Any()
     private var lastSpeakingUids: Set<Int> = emptySet()
     private var lastDispatchTime: Long = 0
-    private var silenceStartTime: Long = 0 // 记录进入静默状态的起始时间
+    private var silenceStartTime: Long = 0
 
-    private  val DISPATCH_INTERVAL = 400L // 正常刷新间隔
-    private  val SILENCE_DEBOUNCE_MS = 200L // 静默消抖阈值：连续 200ms 无声才认定为停止说话
+    // 常量建议调整：
+// 如果 200ms 采集一次，DISPATCH_INTERVAL 建议不要超过 400ms，否则会导致 UI 反应迟钝
+    private  val DISPATCH_INTERVAL = 300L
+    // 说话判定阈值：建议 2 比较稳，但有音乐时开启 VAD 后，volume 为 1 也可以
+    private  val VOLUME_THRESHOLD = 2
+    // 静默消抖：建议设为 600ms-800ms，防止长句中途停顿导致动画断开
+    private  val SILENCE_DEBOUNCE_MS = 800L
     private  val TAG_RTC_VOLUME = "onAudioVolumeIndication"
 
     override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
         super.onAudioVolumeIndication(speakers, totalVolume)
 
+        val now = System.currentTimeMillis()
         val currentUsers = mutableSetOf<Int>()
+
+        // 1. 识别当前说话者
         speakers?.forEach { info ->
-            if (info != null && info.volume > 0) {
-                val uid = if (info.uid == 0) selfUid else info.uid
-                currentUsers.add(uid)
+            if (info != null) {
+                // 重点：增加 info.vad == 1 的判断（前提：enableAudioVolumeIndication 的 report_vad 设为 true）
+                // 这样在背景音乐大时，只要有开口，即便音量小也能识别
+                if (info.volume >= VOLUME_THRESHOLD || info.vad == 1) {
+                    val uid = if (info.uid == 0) selfUid else info.uid
+                    currentUsers.add(uid)
+                }
             }
         }
 
-        val now = System.currentTimeMillis()
-
         synchronized(speakingLock) {
-            if (currentUsers == lastSpeakingUids) {
-                // 如果名单没变，不论是有人还是无人，直接拦截，不浪费任何 CPU
-                return
-            }
+            val isEmpty = currentUsers.isEmpty()
+            val wasEmpty = lastSpeakingUids.isEmpty()
 
-            // --- 核心逻辑 B：针对“静默（Empty）”的消抖处理 ---
-            if (currentUsers.isEmpty()) {
+            if (isEmpty) {
+                // --- 情况 A：当前没声音 ---
+                if (wasEmpty) {
+                    // 之前也是空的，什么都不做
+                    return
+                }
                 if (silenceStartTime == 0L) {
-                    // 刚检测到没声音，记录时间，先不分发（拦截本次）
+                    // 刚检测到没声音，开始计时消抖
                     silenceStartTime = now
                     return
                 } else if (now - silenceStartTime < SILENCE_DEBOUNCE_MS) {
-                    // 没声音的时间还没超过消抖阈值，继续拦截
+                    // 还在消抖时间内，继续维持之前的说话状态，不分发 Empty
                     return
                 }
+                // 超过消抖时间了，准备分发 Empty
             } else {
-                // 只要有人说话，立即重置静默计时器
-                silenceStartTime = 0L
+                // --- 情况 B：当前有人说话 ---
+                silenceStartTime = 0L // 重置静默计时
 
-                // --- 核心逻辑 C：针对“正在说话”的时间频率限流 ---
-                if (now - lastDispatchTime < DISPATCH_INTERVAL) {
+                // 优化：即使名单没变，如果距离上次分发超过了间隔，也允许分发一次
+                // 这样可以确保 UI 动画不会因为长期没收到回调而停止（部分逻辑依赖持续回调）
+                if (currentUsers == lastSpeakingUids && (now - lastDispatchTime < DISPATCH_INTERVAL)) {
+                    return
+                }
+
+                // 如果名单变了，但刷新太快，也拦截一下，除非是“从无到有”瞬间
+                if (currentUsers == lastSpeakingUids && now - lastDispatchTime < DISPATCH_INTERVAL) {
                     return
                 }
             }
 
-            // --- 核心逻辑 D：通过拦截，更新状态并准备异步分发 ---
+            // 更新状态
             lastSpeakingUids = currentUsers.toHashSet()
             lastDispatchTime = now
         }
 
-        // 3. 执行异步分发（使用集合快照保证线程安全）
+        // 2. 执行异步分发
         val dispatchSnapshot = currentUsers.toHashSet()
         Dispatcher.highExecutor.submit {
             try {
+                // 切换到主线程或通过 Listener 分发
                 mediaRtcListeners.dispatch {
                     it.onUsersSpeaking(dispatchSnapshot)
                 }
 
-                // 打印优化后的日志
                 if (dispatchSnapshot.isNotEmpty()) {
                     Log.i(TAG_RTC_VOLUME, "Dispatched Speaking: ${dispatchSnapshot.joinToString(",")}")
                 } else {
-                    Log.d(TAG_RTC_VOLUME, "Dispatched Speaking: [Empty] (After Debounce)")
+                    Log.d(TAG_RTC_VOLUME, "Dispatched Speaking: [Empty] (Final Silence)")
                 }
             } catch (e: Exception) {
                 Log.e(TAG_RTC_VOLUME, "Dispatch failed", e)
