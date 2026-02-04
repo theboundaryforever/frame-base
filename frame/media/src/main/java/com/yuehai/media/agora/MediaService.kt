@@ -360,55 +360,71 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
      *  * 瞬时音量最高的远端用户静音后 20 秒，远端的音量提示回调中将不再包含该用户；如果远端所有用户都将自己静音，20 秒后 SDK 停止报告远端用户的音量提示回调
      * 可用来暂时判断当前说话成员
      */
+    // 1. 定义必要的成员变量（放在类顶部）
     private val speakingLock = Any()
+    private var lastSpeakingUids: Set<Int> = emptySet()
+    private var lastDispatchTime: Long = 0
 
-    val TAG_RTC_VOLUME = "onAudioVolumeIndication"
+    // 建议设置在 200ms - 300ms 之间，平衡灵敏度和性能
+    private  val DISPATCH_INTERVAL = 300L
+    private  val TAG_RTC_VOLUME = "onAudioVolumeIndication"
 
-    override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
-
+    /**
+     * 带有限流和状态比对逻辑的音量回调
+     */
+    override fun onAudioVolumeIndication(
+        speakers: Array<out AudioVolumeInfo>?,
+        totalVolume: Int
+    ) {
+        // 基础父类调用
         super.onAudioVolumeIndication(speakers, totalVolume)
 
-        if (speakers.isNullOrEmpty()) {
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+        // 1. 提取当前正在说话的人（直接在当前线程处理，提高效率）
+        val currentSpeakingUsers = mutableSetOf<Int>()
+        speakers?.forEach { info ->
+            if (info != null && info.volume > 0) {
+                val uid = if (info.uid == 0) selfUid else info.uid
+                currentSpeakingUsers.add(uid)
             }
-
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(emptySet())
-            }
-            return
         }
 
-        Dispatcher.highExecutor.submit({
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+        val now = System.currentTimeMillis()
 
-                speakers.forEach { info ->
-                    if (info != null && info.volume > 0) {
-                        val uid = if (info.uid == 0) selfUid else info.uid
-                        speakingUidSet.add(uid)
-                        Log.v(TAG_RTC_VOLUME, "User speaking: UID=$uid, Volume=${info.volume}")
-                    }
+        synchronized(speakingLock) {
+            if (currentSpeakingUsers == lastSpeakingUids) {
+                return
+            }
+
+            // B. 时间限流：只有在“有人说话”且“间隔太短”时才拦截
+            // 如果 currentSpeakingUsers 为空，说明没人说话了，此时应立即下发，保证 UI 消失无延迟
+            if (currentSpeakingUsers.isNotEmpty() && (now - lastDispatchTime < DISPATCH_INTERVAL)) {
+                return
+            }
+
+            // C. 通过拦截，准备下发，更新记录状态
+            lastSpeakingUids = currentSpeakingUsers.toHashSet() // 存一份快照
+            lastDispatchTime = now
+        }
+
+        // 3. 异步分发（将集合转换为不可变快照，防止异步执行时原集合被修改）
+        val finalDispatchSet = currentSpeakingUsers.toHashSet()
+
+        Dispatcher.highExecutor.submit {
+            try {
+                mediaRtcListeners.dispatch {
+                    it.onUsersSpeaking(finalDispatchSet)
                 }
 
-
+                // 只有真正有变动且有人说话时才打印 I 级日志
+                if (finalDispatchSet.isNotEmpty()) {
+                    Log.i(TAG_RTC_VOLUME, "Dispatched speaking event. UIDs: ${finalDispatchSet.joinToString(",")}")
+                } else {
+                    Log.d(TAG_RTC_VOLUME, "Dispatched speaking event: [Empty]")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG_RTC_VOLUME, "Dispatch speaking event failed", e)
             }
-
-            val currentSpeakingUsers = synchronized(speakingLock) {
-                speakingUidSet.toHashSet()
-            }
-
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(currentSpeakingUsers)
-            }
-
-            Log.i(
-                TAG_RTC_VOLUME,
-                "Dispatched onUsersSpeaking event. Total speaking UIDs: ${
-                    currentSpeakingUsers.joinToString(", ")
-                }"
-            )
-        })
+        }
     }
 
     /**
