@@ -360,55 +360,81 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
      *  * 瞬时音量最高的远端用户静音后 20 秒，远端的音量提示回调中将不再包含该用户；如果远端所有用户都将自己静音，20 秒后 SDK 停止报告远端用户的音量提示回调
      * 可用来暂时判断当前说话成员
      */
+    private var lastNotifiedUsers = emptySet<Int>()
+    private val userActiveTimeMap = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
+    private  val START_THRESHOLD = 2      // ≥ 2 立刻开始播放（你的诉求）
+    private  val STOP_THRESHOLD = 1       // ≤ 1 才考虑停止
+    private  val DEBOUNCE_STOP_MS = 600L  // 防止语句停顿闪断
+
     private val speakingLock = Any()
+    private val mainHandler by lazy {
+        android.os.Handler(android.os.Looper.getMainLooper())
+    }
 
-    val TAG_RTC_VOLUME = "onAudioVolumeIndication"
+    override fun onAudioVolumeIndication(
+        speakers: Array<out AudioVolumeInfo>?,
+        totalVolume: Int
+    ) {
+        val now = android.os.SystemClock.elapsedRealtime()
 
-    override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
+        speakers?.forEach { info ->
+            if (info == null) return@forEach
 
-        super.onAudioVolumeIndication(speakers, totalVolume)
+            val uid = if (info.uid == 0) selfUid else info.uid
+            val lastActiveTime = userActiveTimeMap[uid]
 
-        if (speakers.isNullOrEmpty()) {
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
-            }
-
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(emptySet())
-            }
-            return
-        }
-
-        Dispatcher.highExecutor.submit({
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
-
-                speakers.forEach { info ->
-                    if (info != null && info.volume > 0) {
-                        val uid = if (info.uid == 0) selfUid else info.uid
-                        speakingUidSet.add(uid)
-                        Log.v(TAG_RTC_VOLUME, "User speaking: UID=$uid, Volume=${info.volume}")
-                    }
+            when {
+                // 🎯 达到开始阈值：立即认为在说话
+                info.volume >= START_THRESHOLD -> {
+                    userActiveTimeMap[uid] = now
                 }
 
-
+                // 🔇 音量很低，但如果之前在说话，不立刻停
+                info.volume <= STOP_THRESHOLD && lastActiveTime != null -> {
+                    // 什么都不做，交给 debounce 时间判断
+                }
             }
+        }
 
-            val currentSpeakingUsers = synchronized(speakingLock) {
-                speakingUidSet.toHashSet()
+        val currentAliveUsers = mutableSetOf<Int>()
+        val expiredUids = mutableListOf<Int>()
+
+        for (entry in userActiveTimeMap.entries) {
+            val uid = entry.key
+            val lastTime = entry.value
+
+            if (now - lastTime < DEBOUNCE_STOP_MS) {
+                currentAliveUsers.add(uid)
+            } else {
+                expiredUids.add(uid)
             }
+        }
 
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(currentSpeakingUsers)
+        // 3️⃣ 清理真正过期的 uid
+        if (expiredUids.isNotEmpty()) {
+            expiredUids.forEach { userActiveTimeMap.remove(it) }
+        }
+
+        // 4️⃣ 对比状态，只在“集合变化”时通知
+        var snapshotToNotify: Set<Int>? = null
+
+        synchronized(speakingLock) {
+            if (currentAliveUsers != lastNotifiedUsers) {
+                lastNotifiedUsers = currentAliveUsers.toSet() // 快照
+                snapshotToNotify = lastNotifiedUsers
             }
+        }
 
-            Log.i(
-                TAG_RTC_VOLUME,
-                "Dispatched onUsersSpeaking event. Total speaking UIDs: ${
-                    currentSpeakingUsers.joinToString(", ")
-                }"
-            )
-        })
+        // 5️⃣ 主线程分发（SVGA 在这里 start / stop）
+        snapshotToNotify?.let { targets ->
+            mainHandler.post {
+                mediaRtcListeners.dispatch {
+                    it.onUsersSpeaking(targets)
+                }
+                Log.d("AudioVolume", "Speaking users changed: $targets")
+            }
+        }
     }
 
     /**
