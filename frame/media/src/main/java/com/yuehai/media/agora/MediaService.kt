@@ -360,55 +360,78 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
      *  * 瞬时音量最高的远端用户静音后 20 秒，远端的音量提示回调中将不再包含该用户；如果远端所有用户都将自己静音，20 秒后 SDK 停止报告远端用户的音量提示回调
      * 可用来暂时判断当前说话成员
      */
+    // 成员变量定义
     private val speakingLock = Any()
+    private var lastSpeakingUids: Set<Int> = emptySet()
+    private var lastDispatchTime: Long = 0
+    private var silenceStartTime: Long = 0 // 记录进入静默状态的起始时间
 
-    val TAG_RTC_VOLUME = "onAudioVolumeIndication"
+    private  val DISPATCH_INTERVAL = 400L // 正常刷新间隔
+    private  val SILENCE_DEBOUNCE_MS = 200L // 静默消抖阈值：连续 200ms 无声才认定为停止说话
+    private  val TAG_RTC_VOLUME = "onAudioVolumeIndication"
 
     override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
-
         super.onAudioVolumeIndication(speakers, totalVolume)
 
-        if (speakers.isNullOrEmpty()) {
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+        val currentUsers = mutableSetOf<Int>()
+        speakers?.forEach { info ->
+            if (info != null && info.volume > 0) {
+                val uid = if (info.uid == 0) selfUid else info.uid
+                currentUsers.add(uid)
             }
-
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(emptySet())
-            }
-            return
         }
 
-        Dispatcher.highExecutor.submit({
-            synchronized(speakingLock) {
-                speakingUidSet.clear()
+        val now = System.currentTimeMillis()
 
-                speakers.forEach { info ->
-                    if (info != null && info.volume > 0) {
-                        val uid = if (info.uid == 0) selfUid else info.uid
-                        speakingUidSet.add(uid)
-                        Log.v(TAG_RTC_VOLUME, "User speaking: UID=$uid, Volume=${info.volume}")
-                    }
+        synchronized(speakingLock) {
+            if (currentUsers == lastSpeakingUids) {
+                // 如果名单没变，不论是有人还是无人，直接拦截，不浪费任何 CPU
+                return
+            }
+
+            // --- 核心逻辑 B：针对“静默（Empty）”的消抖处理 ---
+            if (currentUsers.isEmpty()) {
+                if (silenceStartTime == 0L) {
+                    // 刚检测到没声音，记录时间，先不分发（拦截本次）
+                    silenceStartTime = now
+                    return
+                } else if (now - silenceStartTime < SILENCE_DEBOUNCE_MS) {
+                    // 没声音的时间还没超过消抖阈值，继续拦截
+                    return
+                }
+            } else {
+                // 只要有人说话，立即重置静默计时器
+                silenceStartTime = 0L
+
+                // --- 核心逻辑 C：针对“正在说话”的时间频率限流 ---
+                if (now - lastDispatchTime < DISPATCH_INTERVAL) {
+                    return
+                }
+            }
+
+            // --- 核心逻辑 D：通过拦截，更新状态并准备异步分发 ---
+            lastSpeakingUids = currentUsers.toHashSet()
+            lastDispatchTime = now
+        }
+
+        // 3. 执行异步分发（使用集合快照保证线程安全）
+        val dispatchSnapshot = currentUsers.toHashSet()
+        Dispatcher.highExecutor.submit {
+            try {
+                mediaRtcListeners.dispatch {
+                    it.onUsersSpeaking(dispatchSnapshot)
                 }
 
-
+                // 打印优化后的日志
+                if (dispatchSnapshot.isNotEmpty()) {
+                    Log.i(TAG_RTC_VOLUME, "Dispatched Speaking: ${dispatchSnapshot.joinToString(",")}")
+                } else {
+                    Log.d(TAG_RTC_VOLUME, "Dispatched Speaking: [Empty] (After Debounce)")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG_RTC_VOLUME, "Dispatch failed", e)
             }
-
-            val currentSpeakingUsers = synchronized(speakingLock) {
-                speakingUidSet.toHashSet()
-            }
-
-            mediaRtcListeners.dispatch {
-                it.onUsersSpeaking(currentSpeakingUsers)
-            }
-
-            Log.i(
-                TAG_RTC_VOLUME,
-                "Dispatched onUsersSpeaking event. Total speaking UIDs: ${
-                    currentSpeakingUsers.joinToString(", ")
-                }"
-            )
-        })
+        }
     }
 
     /**
