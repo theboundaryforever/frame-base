@@ -360,80 +360,70 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
      *  * 瞬时音量最高的远端用户静音后 20 秒，远端的音量提示回调中将不再包含该用户；如果远端所有用户都将自己静音，20 秒后 SDK 停止报告远端用户的音量提示回调
      * 可用来暂时判断当前说话成员
      */
-    // 成员变量定义
-    private val speakingLock = Any()
-    private var lastSpeakingUids: Set<Int> = emptySet()
-    private var lastDispatchTime: Long = 0
-    private var silenceStartTime: Long = 0 // 记录进入静默状态的起始时间
+    private var lastNotifiedUsers = emptySet<Int>()
+    private val userActiveTimeMap = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    private  val DEBOUNCE_STOP_MS = 1000L
+    private val speakingLock = Any() // 增加一个轻量锁，保证状态比对的原子性
 
-    private  val DISPATCH_INTERVAL = 400L // 正常刷新间隔
-    private  val SILENCE_DEBOUNCE_MS = 200L // 静默消抖阈值：连续 200ms 无声才认定为停止说话
-    private  val TAG_RTC_VOLUME = "onAudioVolumeIndication"
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
 
     override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
-        super.onAudioVolumeIndication(speakers, totalVolume)
+        // 删掉 super 逻辑，除非你有特殊基类处理，否则 RTC SDK 的 super 通常是空的
 
-        val currentUsers = mutableSetOf<Int>()
+        val now = android.os.SystemClock.elapsedRealtime()
+
+        // 1. 记录当前说话者 (写操作)
         speakers?.forEach { info ->
-            if (info != null && info.volume > 0) {
+            if (info != null && info.volume > 10) {
                 val uid = if (info.uid == 0) selfUid else info.uid
-                currentUsers.add(uid)
+                userActiveTimeMap[uid] = now
             }
         }
 
-        val now = System.currentTimeMillis()
+        // 2. 筛选活跃用户 (读操作)
+        // 局部变量，确保线程安全，不直接复用成员变量
+        val currentAliveUsers = mutableSetOf<Int>()
+        val expiredUids = mutableListOf<Int>()
+
+        // 使用 ConcurrentHashMap 的 entrySet 进行遍历是弱一致性的，不会抛出并发修改异常
+        for (entry in userActiveTimeMap.entries) {
+            val uid = entry.key
+            val lastTime = entry.value
+            if (now - lastTime < DEBOUNCE_STOP_MS) {
+                currentAliveUsers.add(uid)
+            } else {
+                expiredUids.add(uid)
+            }
+        }
+
+        // 3. 清理过期数据 (避免在遍历过程中直接 remove，防止某些极端情况下的逻辑错误)
+        if (expiredUids.isNotEmpty()) {
+            expiredUids.forEach { userActiveTimeMap.remove(it) }
+        }
+
+        // 4. 状态比对与分发
+        var snapshotToNotify: Set<Int>? = null
 
         synchronized(speakingLock) {
-            if (currentUsers == lastSpeakingUids) {
-                // 如果名单没变，不论是有人还是无人，直接拦截，不浪费任何 CPU
-                return
+            // Set 的 != 会比对集合内容是否一致
+            if (currentAliveUsers != lastNotifiedUsers) {
+                // 必须进行 toSet() 深度拷贝，防止异步 post 时 currentAliveUsers 被外部修改
+                lastNotifiedUsers = currentAliveUsers.toSet()
+                snapshotToNotify = lastNotifiedUsers
             }
-
-            // --- 核心逻辑 B：针对“静默（Empty）”的消抖处理 ---
-            if (currentUsers.isEmpty()) {
-                if (silenceStartTime == 0L) {
-                    // 刚检测到没声音，记录时间，先不分发（拦截本次）
-                    silenceStartTime = now
-                    return
-                } else if (now - silenceStartTime < SILENCE_DEBOUNCE_MS) {
-                    // 没声音的时间还没超过消抖阈值，继续拦截
-                    return
-                }
-            } else {
-                // 只要有人说话，立即重置静默计时器
-                silenceStartTime = 0L
-
-                // --- 核心逻辑 C：针对“正在说话”的时间频率限流 ---
-                if (now - lastDispatchTime < DISPATCH_INTERVAL) {
-                    return
-                }
-            }
-
-            // --- 核心逻辑 D：通过拦截，更新状态并准备异步分发 ---
-            lastSpeakingUids = currentUsers.toHashSet()
-            lastDispatchTime = now
         }
 
-        // 3. 执行异步分发（使用集合快照保证线程安全）
-        val dispatchSnapshot = currentUsers.toHashSet()
-        Dispatcher.highExecutor.submit {
-            try {
+        // 5. 只有在真正发生“质变”时才切换到主线程
+        snapshotToNotify?.let { targets ->
+            mainHandler.post {
+                // 使用快照数据 targets，确保主线程拿到的名单是准确的
                 mediaRtcListeners.dispatch {
-                    it.onUsersSpeaking(dispatchSnapshot)
+                    it.onUsersSpeaking(targets)
                 }
-
-                // 打印优化后的日志
-                if (dispatchSnapshot.isNotEmpty()) {
-                    Log.i(TAG_RTC_VOLUME, "Dispatched Speaking: ${dispatchSnapshot.joinToString(",")}")
-                } else {
-                    Log.d(TAG_RTC_VOLUME, "Dispatched Speaking: [Empty] (After Debounce)")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG_RTC_VOLUME, "Dispatch failed", e)
+                Log.d("AudioVolume", "Speaking state changed: $targets")
             }
         }
     }
-
     /**
      * 媒体引擎成功加载的回调
      */
