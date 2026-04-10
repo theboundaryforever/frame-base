@@ -67,7 +67,9 @@ open class NewBaseActivity : AppCompatActivity() {
     open fun immersionBarDark() {
         ImmersionBar.with(this).statusBarDarkFont(true).init()
         ImmersionBar.with(this).navigationBarColor(android.R.color.black)
-            .navigationBarDarkIcon(true).init()
+            .navigationBarDarkIcon(
+                false
+            ).init()
     }
 
     open fun immersionBarWhite() {
