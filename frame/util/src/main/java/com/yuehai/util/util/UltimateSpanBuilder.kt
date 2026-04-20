@@ -61,6 +61,9 @@ class UltimateSpanBuilder private constructor(private val format: String) {
             spans.add(StrikethroughSpan())
         }
 
+        fun space(widthPx: Int) = apply {
+            spans.add(SpaceSpan(widthPx))
+        }
         fun clickable(
             color: Int? = null,
             underline: Boolean = false,
