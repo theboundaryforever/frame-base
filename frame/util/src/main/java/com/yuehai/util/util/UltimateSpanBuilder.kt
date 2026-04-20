@@ -1,25 +1,24 @@
-package com.yuehai.util.util
-
 import android.content.Context
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
+import android.text.BidiFormatter
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextPaint
-import android.text.TextUtils
-import android.text.method.LinkMovementMethod
 import android.text.style.*
 import android.view.Gravity
 import android.view.View
 import android.widget.TextView
-
+import android.text.TextUtils
 
 class UltimateSpanBuilder private constructor(private val format: String) {
 
     private val argsList = mutableListOf<Pair<String, List<Any>>>()
 
     companion object {
-        // 增强正则：捕获组 1 用于提取序号数字 (例如 %1$s 中的 1)
+        /** * 增强版正则表达式
+         * 捕获组 1: 提取数字编号 (例如从 %1$s 中提取 1)
+         */
         private val placeholderRegex = "%(?:(\\d+)\\$)?s".toRegex()
 
         /** 开启 Builder 入口 */
@@ -34,54 +33,69 @@ class UltimateSpanBuilder private constructor(private val format: String) {
         return this
     }
 
-    /** 核心构建逻辑：支持序号解析，适配 RTL 语序调换 */
+    /** * 核心构建逻辑
+     * 适配 RTL 强制方向、支持序号解析、兼容 LTR 混合排版
+     */
     fun build(context: Context): CharSequence {
-        val matches = placeholderRegex.findAll(format).toList()
         val builder = SpannableStringBuilder()
-        var lastIndex = 0
 
-        // 自动索引：处理那些没有写数字编号的 %s
+        // 1. 获取当前是否为 RTL 布局
+        val isRtl = context.resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL
+
+        // 2. 在 RTL 环境下，首位插入 RLM (Right-to-Left Mark) 字符
+        // 它的作用是强迫系统从右向左排版，即使句子以英文单词(LTR)开头或结尾
+        if (isRtl) {
+            builder.append("\u200F")
+        }
+
+        val matches = placeholderRegex.findAll(format).toList()
+        var lastIndex = 0
         var autoIndex = 0
 
         matches.forEach { match ->
-            // 1. 拼接占位符之前的普通文本
+            // 拼接占位符之前的普通文本
             builder.append(format.substring(lastIndex, match.range.first))
             lastIndex = match.range.last + 1
 
-            // 2. 确定该位置对应的参数索引
-            // 获取正则第一个捕获组的内容 (即数字)
+            // 3. 提取占位符编号，实现参数精准投递
             val indexString = match.groups[1]?.value
             val targetIndex = if (indexString != null) {
-                // 有编号：%1$s -> 索引 0
-                indexString.toInt() - 1
+                indexString.toInt() - 1 // %1$s 对应 argsList[0]
             } else {
-                // 无编号：%s -> 按出现顺序
                 autoIndex++
             }
 
+            // 4. 安全填充参数
             if (targetIndex in argsList.indices) {
                 val (argText, spans) = argsList[targetIndex]
                 val start = builder.length
-                builder.append(argText)
-                val end = builder.length
 
+                // 细节优化：如果是图片参数且 argText 为空，插入一个微小的空格占位，防止 Span 丢失
+                val finalContent = if (argText.isEmpty() && spans.any { it is ImageSpan }) " " else argText
+                builder.append(finalContent)
+
+                val end = builder.length
                 spans.forEach { span ->
                     builder.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
             } else {
-                // 如果参数列表不够，保留原占位符
+                // 如果没有对应的参数，保留原始占位符
                 builder.append(match.value)
             }
         }
 
+        // 拼接剩余文本
         if (lastIndex < format.length) {
             builder.append(format.substring(lastIndex))
         }
+
         return builder
     }
 
+    /** 配置项 DSL */
     class ArgConfig(val text: String) {
         val spans = mutableListOf<Any>()
+
         fun color(color: Int) = apply { spans.add(ForegroundColorSpan(color)) }
         fun size(px: Int) = apply { spans.add(AbsoluteSizeSpan(px, false)) }
 
@@ -92,6 +106,9 @@ class UltimateSpanBuilder private constructor(private val format: String) {
             })
         }
 
+        /** * 插入图片
+         * @param autoMirror 设为 true 时，图片会在 RTL 下自动水平翻转（适合图标，不适合头像）
+         */
         fun image(
             drawable: Drawable,
             width: Int? = null,
@@ -102,31 +119,36 @@ class UltimateSpanBuilder private constructor(private val format: String) {
             val w = width ?: drawable.intrinsicWidth
             val h = height ?: drawable.intrinsicHeight
             drawable.setBounds(0, 0, w, h)
-            // 头像一般不建议 mirror，但图标可以
             drawable.isAutoMirrored = autoMirror
             spans.add(ImageSpan(drawable, verticalAlignment))
+        }
+
+        fun clickable(color: Int? = null, underline: Boolean = false, onClick: () -> Unit) = apply {
+            spans.add(object : ClickableSpan() {
+                override fun onClick(widget: View) = onClick()
+                override fun updateDrawState(ds: TextPaint) {
+                    color?.let { ds.color = it }
+                    ds.isUnderlineText = underline
+                }
+            })
         }
     }
 }
 
-/** TextView 扩展函数：适配 RTL 对齐逻辑 */
+/** * TextView 扩展函数
+ * 特别适配跑马灯/自定义 View 的对齐逻辑
+ */
 fun TextView.setUltimateText(builder: UltimateSpanBuilder) {
-    // 建议使用更现代的 API 判断 RTL
     val isRtl = TextUtils.getLayoutDirectionFromLocale(java.util.Locale.getDefault()) == View.LAYOUT_DIRECTION_RTL
-
-    this.text = builder.build(context)
+    val content = builder.build(context)
+    this.text = content
 
     if (isRtl) {
-        // RTL 下使用 VIEW_START 配合 TextDirection 效果最稳
+        // 使用 VIEW_START，系统会自动根据 RTL 环境选择右对齐
         this.textAlignment = View.TEXT_ALIGNMENT_VIEW_START
         this.gravity = Gravity.CENTER_VERTICAL or Gravity.START
     } else {
         this.textAlignment = View.TEXT_ALIGNMENT_VIEW_START
         this.gravity = Gravity.CENTER_VERTICAL or Gravity.START
-    }
-
-    if (this.text is Spanned && (this.text as Spanned).getSpans(0, text.length, ClickableSpan::class.java).isNotEmpty()) {
-        this.movementMethod = LinkMovementMethod.getInstance()
-        this.highlightColor = android.graphics.Color.TRANSPARENT
     }
 }
