@@ -64,6 +64,7 @@ class UltimateSpanBuilder private constructor(private val format: String) {
         fun space(widthPx: Int) = apply {
             spans.add(SpaceSpan(widthPx))
         }
+
         fun clickable(
             color: Int? = null,
             underline: Boolean = false,
@@ -92,7 +93,7 @@ class UltimateSpanBuilder private constructor(private val format: String) {
             val h = height ?: drawable.intrinsicHeight
             drawable.setBounds(0, 0, w, h)
             drawable.isAutoMirrored = autoMirror
-            spans.add(ImageSpan(drawable, verticalAlignment))
+            spans.add(CenterImageSpan(drawable))
         }
     }
 
