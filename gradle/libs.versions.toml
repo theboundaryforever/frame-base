@@ -54,7 +54,7 @@ play-services-auth = "20.6.0"
 play-services-wallet = "19.4.0"
 billing = "7.1.1"
 fragment-ktx = "1.8.2"
-voice-sdk = "4.6.0"
+voice-sdk = "3.7.3.150.AINS"
 libglidesvga = "1.0.2"
 drouter-plugin = "1.4.0"
 drouter-api = "2.4.6"
@@ -191,7 +191,7 @@ play-services-auth = { group = "com.google.android.gms", name = "play-services-a
 play-services-wallet = { group = "com.google.android.gms", name = "play-services-wallet", version.ref = "play-services-wallet" }
 billing = { group = "com.android.billingclient", name = "billing-ktx", version.ref = "billing" }
 #agora
-agora = { group = "io.agora.rtc", name = "voice-sdk", version.ref = "voice-sdk" }
+agora = { group = "io.agora.rtc", name = "agora-special-voice", version.ref = "voice-sdk" }
 fragment-ktx = { group = "androidx.fragment", name = "fragment-ktx", version.ref = "fragment-ktx" }
 
 #libglidesvga
