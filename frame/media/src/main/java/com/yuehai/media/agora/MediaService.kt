@@ -156,7 +156,7 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
                 ?: throw IllegalStateException("RtcEngine.create(config) 返回 null，请检查 AppId/Context/EventHandler 配置")
 
             engine.setChannelProfile(CHANNEL_PROFILE_LIVE_BROADCASTING)
-            engine.enableAudioVolumeIndication(300, 3, false)
+            engine.enableAudioVolumeIndication(1000, 3, false)
             agoraRtcEngine = engine
             engine
         }
