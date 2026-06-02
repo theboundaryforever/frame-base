@@ -637,7 +637,6 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
 
     override fun muteLocalAudioStream(mute: Boolean) {
         getRtcEngine().muteLocalAudioStream(mute)
-        enableLocalAudio(!mute)
     }
 
     override fun setEnableSpeakerphone(enable: Boolean) {
