@@ -500,7 +500,7 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
         if (profile == ChannelProfile.LIVE_BROADCASTING) {
             val rtcType = getRtcType()
             getRtcEngine().enableAudioVolumeIndication(
-                if (rtcType == RtcType.T_RTC || rtcType == RtcType.ZEGO_RTC) 300 else 100,
+                if (rtcType == RtcType.T_RTC || rtcType == RtcType.ZEGO_RTC) 1000 else 100,
                 3,
                 false
             )
