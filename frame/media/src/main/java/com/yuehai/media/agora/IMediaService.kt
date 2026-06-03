@@ -227,6 +227,8 @@ interface IMediaRtcService {
 
     fun destroy()
 
+    fun muteRecordingSignal(isMute: Boolean)
+
 }
 
 interface IMediaService : IMediaRtcService, IMusicService, ISoundEffectService {

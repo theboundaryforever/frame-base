@@ -368,12 +368,14 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
 
     // 常量建议调整：
 // 如果 200ms 采集一次，DISPATCH_INTERVAL 建议不要超过 400ms，否则会导致 UI 反应迟钝
-    private  val DISPATCH_INTERVAL = 300L
+    private val DISPATCH_INTERVAL = 300L
+
     // 说话判定阈值：建议 2 比较稳，但有音乐时开启 VAD 后，volume 为 1 也可以
-    private  val VOLUME_THRESHOLD = 2
+    private val VOLUME_THRESHOLD = 2
+
     // 静默消抖：建议设为 600ms-800ms，防止长句中途停顿导致动画断开
-    private  val SILENCE_DEBOUNCE_MS = 800L
-    private  val TAG_RTC_VOLUME = "onAudioVolumeIndication"
+    private val SILENCE_DEBOUNCE_MS = 800L
+    private val TAG_RTC_VOLUME = "onAudioVolumeIndication"
 
     override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
         super.onAudioVolumeIndication(speakers, totalVolume)
@@ -443,7 +445,10 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
                 }
 
                 if (dispatchSnapshot.isNotEmpty()) {
-                    Log.i(TAG_RTC_VOLUME, "Dispatched Speaking: ${dispatchSnapshot.joinToString(",")}")
+                    Log.i(
+                        TAG_RTC_VOLUME,
+                        "Dispatched Speaking: ${dispatchSnapshot.joinToString(",")}"
+                    )
                 } else {
                     Log.d(TAG_RTC_VOLUME, "Dispatched Speaking: [Empty] (Final Silence)")
                 }
@@ -707,6 +712,10 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
             }
         }
 
+    }
+
+    override fun muteRecordingSignal(isMute: Boolean) {
+        getRtcEngine().muteRecordingSignal(isMute)
     }
 
     private var musicPlayState = MediaMusicPlayState.STOP
