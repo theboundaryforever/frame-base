@@ -378,79 +378,79 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
     override fun onAudioVolumeIndication(speakers: Array<out AudioVolumeInfo>?, totalVolume: Int) {
         super.onAudioVolumeIndication(speakers, totalVolume)
 
-//        val now = System.currentTimeMillis()
-//        val currentUsers = mutableSetOf<Int>()
-//
-//        // 1. 识别当前说话者
-//        speakers?.forEach { info ->
-//            if (info != null) {
-//                // 重点：增加 info.vad == 1 的判断（前提：enableAudioVolumeIndication 的 report_vad 设为 true）
-//                // 这样在背景音乐大时，只要有开口，即便音量小也能识别
-//                if (info.volume >= VOLUME_THRESHOLD || info.vad == 1) {
-//                    val uid = if (info.uid == 0) selfUid else info.uid
-//                    currentUsers.add(uid)
-//                }
-//            }
-//        }
-//
-//        synchronized(speakingLock) {
-//            val isEmpty = currentUsers.isEmpty()
-//            val wasEmpty = lastSpeakingUids.isEmpty()
-//
-//            if (isEmpty) {
-//                // --- 情况 A：当前没声音 ---
-//                if (wasEmpty) {
-//                    // 之前也是空的，什么都不做
-//                    return
-//                }
-//                if (silenceStartTime == 0L) {
-//                    // 刚检测到没声音，开始计时消抖
-//                    silenceStartTime = now
-//                    return
-//                } else if (now - silenceStartTime < SILENCE_DEBOUNCE_MS) {
-//                    // 还在消抖时间内，继续维持之前的说话状态，不分发 Empty
-//                    return
-//                }
-//                // 超过消抖时间了，准备分发 Empty
-//            } else {
-//                // --- 情况 B：当前有人说话 ---
-//                silenceStartTime = 0L // 重置静默计时
-//
-//                // 优化：即使名单没变，如果距离上次分发超过了间隔，也允许分发一次
-//                // 这样可以确保 UI 动画不会因为长期没收到回调而停止（部分逻辑依赖持续回调）
-//                if (currentUsers == lastSpeakingUids && (now - lastDispatchTime < DISPATCH_INTERVAL)) {
-//                    return
-//                }
-//
-//                // 如果名单变了，但刷新太快，也拦截一下，除非是“从无到有”瞬间
-//                if (currentUsers == lastSpeakingUids && now - lastDispatchTime < DISPATCH_INTERVAL) {
-//                    return
-//                }
-//            }
-//
-//            // 更新状态
-//            lastSpeakingUids = currentUsers.toHashSet()
-//            lastDispatchTime = now
-//        }
-//
-//        // 2. 执行异步分发
-//        val dispatchSnapshot = currentUsers.toHashSet()
-//        Dispatcher.highExecutor.submit {
-//            try {
-//                // 切换到主线程或通过 Listener 分发
-//                mediaRtcListeners.dispatch {
-//                    it.onUsersSpeaking(dispatchSnapshot)
-//                }
-//
-//                if (dispatchSnapshot.isNotEmpty()) {
-//                    Log.i(TAG_RTC_VOLUME, "Dispatched Speaking: ${dispatchSnapshot.joinToString(",")}")
-//                } else {
-//                    Log.d(TAG_RTC_VOLUME, "Dispatched Speaking: [Empty] (Final Silence)")
-//                }
-//            } catch (e: Exception) {
-//                Log.e(TAG_RTC_VOLUME, "Dispatch failed", e)
-//            }
-//        }
+        val now = System.currentTimeMillis()
+        val currentUsers = mutableSetOf<Int>()
+
+        // 1. 识别当前说话者
+        speakers?.forEach { info ->
+            if (info != null) {
+                // 重点：增加 info.vad == 1 的判断（前提：enableAudioVolumeIndication 的 report_vad 设为 true）
+                // 这样在背景音乐大时，只要有开口，即便音量小也能识别
+                if (info.volume >= VOLUME_THRESHOLD || info.vad == 1) {
+                    val uid = if (info.uid == 0) selfUid else info.uid
+                    currentUsers.add(uid)
+                }
+            }
+        }
+
+        synchronized(speakingLock) {
+            val isEmpty = currentUsers.isEmpty()
+            val wasEmpty = lastSpeakingUids.isEmpty()
+
+            if (isEmpty) {
+                // --- 情况 A：当前没声音 ---
+                if (wasEmpty) {
+                    // 之前也是空的，什么都不做
+                    return
+                }
+                if (silenceStartTime == 0L) {
+                    // 刚检测到没声音，开始计时消抖
+                    silenceStartTime = now
+                    return
+                } else if (now - silenceStartTime < SILENCE_DEBOUNCE_MS) {
+                    // 还在消抖时间内，继续维持之前的说话状态，不分发 Empty
+                    return
+                }
+                // 超过消抖时间了，准备分发 Empty
+            } else {
+                // --- 情况 B：当前有人说话 ---
+                silenceStartTime = 0L // 重置静默计时
+
+                // 优化：即使名单没变，如果距离上次分发超过了间隔，也允许分发一次
+                // 这样可以确保 UI 动画不会因为长期没收到回调而停止（部分逻辑依赖持续回调）
+                if (currentUsers == lastSpeakingUids && (now - lastDispatchTime < DISPATCH_INTERVAL)) {
+                    return
+                }
+
+                // 如果名单变了，但刷新太快，也拦截一下，除非是“从无到有”瞬间
+                if (currentUsers == lastSpeakingUids && now - lastDispatchTime < DISPATCH_INTERVAL) {
+                    return
+                }
+            }
+
+            // 更新状态
+            lastSpeakingUids = currentUsers.toHashSet()
+            lastDispatchTime = now
+        }
+
+        // 2. 执行异步分发
+        val dispatchSnapshot = currentUsers.toHashSet()
+        Dispatcher.highExecutor.submit {
+            try {
+                // 切换到主线程或通过 Listener 分发
+                mediaRtcListeners.dispatch {
+                    it.onUsersSpeaking(dispatchSnapshot)
+                }
+
+                if (dispatchSnapshot.isNotEmpty()) {
+                    Log.i(TAG_RTC_VOLUME, "Dispatched Speaking: ${dispatchSnapshot.joinToString(",")}")
+                } else {
+                    Log.d(TAG_RTC_VOLUME, "Dispatched Speaking: [Empty] (Final Silence)")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG_RTC_VOLUME, "Dispatch failed", e)
+            }
+        }
     }
 
     /**
