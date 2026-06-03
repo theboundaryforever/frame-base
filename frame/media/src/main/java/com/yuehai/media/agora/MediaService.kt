@@ -491,7 +491,9 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
     }
 
     override fun setAudioProfile(profile: AudioProfile, scenario: AudioScenario) {
+        Constants.AUDIO_PROFILE_MUSIC_STANDARD
         getRtcEngine().setAudioProfile(profile.value, scenario.value)
+
     }
 
     override fun setChannelProfile(profile: ChannelProfile) {
@@ -507,6 +509,8 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
         } else {
             getRtcEngine().enableAudioVolumeIndication(0, 3, false)
         }
+
+        getRtcEngine().setAudioScenario(Constants.AUDIO_SCENARIO_GAME_STREAMING);
     }
 
     private val joinChannelTimeout by lazy {
