@@ -156,7 +156,7 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
                 ?: throw IllegalStateException("RtcEngine.create(config) 返回 null，请检查 AppId/Context/EventHandler 配置")
 
             engine.setChannelProfile(CHANNEL_PROFILE_LIVE_BROADCASTING)
-            engine.enableAudioVolumeIndication(300, 3, false)
+            engine.enableAudioVolumeIndication(1000, 3, false)
             agoraRtcEngine = engine
             engine
         }
@@ -491,7 +491,9 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
     }
 
     override fun setAudioProfile(profile: AudioProfile, scenario: AudioScenario) {
+        Constants.AUDIO_PROFILE_MUSIC_STANDARD
         getRtcEngine().setAudioProfile(profile.value, scenario.value)
+
     }
 
     override fun setChannelProfile(profile: ChannelProfile) {
@@ -500,13 +502,15 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
         if (profile == ChannelProfile.LIVE_BROADCASTING) {
             val rtcType = getRtcType()
             getRtcEngine().enableAudioVolumeIndication(
-                if (rtcType == RtcType.T_RTC || rtcType == RtcType.ZEGO_RTC) 300 else 100,
+                if (rtcType == RtcType.T_RTC || rtcType == RtcType.ZEGO_RTC) 1000 else 100,
                 3,
                 false
             )
         } else {
             getRtcEngine().enableAudioVolumeIndication(0, 3, false)
         }
+
+        getRtcEngine().setAudioScenario(Constants.AUDIO_SCENARIO_GAME_STREAMING);
     }
 
     private val joinChannelTimeout by lazy {
@@ -637,7 +641,6 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
 
     override fun muteLocalAudioStream(mute: Boolean) {
         getRtcEngine().muteLocalAudioStream(mute)
-        enableLocalAudio(!mute)
     }
 
     override fun setEnableSpeakerphone(enable: Boolean) {
