@@ -22,26 +22,26 @@ import com.yuehai.media.listener.IMediaRtcListener
 import com.yuehai.util.AppUtil
 import com.yuehai.util.language.collection.ConcurrentList
 import com.yuehai.util.util.PackageUtil
-import io.agora.rtc.Constants
-import io.agora.rtc.Constants.AUDIO_MIXING_REASON_ALL_LOOPS_COMPLETED
-import io.agora.rtc.Constants.AUDIO_MIXING_REASON_CAN_NOT_OPEN
-import io.agora.rtc.Constants.AUDIO_MIXING_REASON_INTERRUPTED_EOF
-import io.agora.rtc.Constants.AUDIO_MIXING_REASON_ONE_LOOP_COMPLETED
-import io.agora.rtc.Constants.AUDIO_MIXING_REASON_RESUMED_BY_USER
-import io.agora.rtc.Constants.AUDIO_MIXING_REASON_STOPPED_BY_USER
-import io.agora.rtc.Constants.AUDIO_MIXING_REASON_TOO_FREQUENT_CALL
-import io.agora.rtc.Constants.CHANNEL_PROFILE_LIVE_BROADCASTING
-import io.agora.rtc.Constants.ERR_ADM_GENERAL_ERROR
-import io.agora.rtc.Constants.ERR_ADM_INIT_PLAYOUT
-import io.agora.rtc.Constants.ERR_JOIN_CHANNEL_REJECTED
-import io.agora.rtc.Constants.MEDIA_ENGINE_AUDIO_EVENT_MIXING_ERROR
-import io.agora.rtc.Constants.MEDIA_ENGINE_AUDIO_EVENT_MIXING_PAUSED
-import io.agora.rtc.Constants.MEDIA_ENGINE_AUDIO_EVENT_MIXING_PLAY
-import io.agora.rtc.Constants.MEDIA_ENGINE_AUDIO_EVENT_MIXING_STOPPED
-import io.agora.rtc.IRtcEngineEventHandler
-import io.agora.rtc.RtcEngine
-import io.agora.rtc.RtcEngineConfig
-import io.agora.rtc.models.ClientRoleOptions
+import io.agora.rtc2.ClientRoleOptions
+import io.agora.rtc2.Constants
+import io.agora.rtc2.Constants.AUDIO_MIXING_REASON_ALL_LOOPS_COMPLETED
+import io.agora.rtc2.Constants.AUDIO_MIXING_REASON_CAN_NOT_OPEN
+import io.agora.rtc2.Constants.AUDIO_MIXING_REASON_INTERRUPTED_EOF
+import io.agora.rtc2.Constants.AUDIO_MIXING_REASON_ONE_LOOP_COMPLETED
+import io.agora.rtc2.Constants.AUDIO_MIXING_REASON_RESUMED_BY_USER
+import io.agora.rtc2.Constants.AUDIO_MIXING_REASON_STOPPED_BY_USER
+import io.agora.rtc2.Constants.AUDIO_MIXING_REASON_TOO_FREQUENT_CALL
+import io.agora.rtc2.Constants.AUDIO_MIXING_STATE_FAILED
+import io.agora.rtc2.Constants.AUDIO_MIXING_STATE_PAUSED
+import io.agora.rtc2.Constants.AUDIO_MIXING_STATE_STOPPED
+
+import io.agora.rtc2.Constants.CHANNEL_PROFILE_LIVE_BROADCASTING
+import io.agora.rtc2.Constants.ERR_ADM_GENERAL_ERROR
+import io.agora.rtc2.Constants.ERR_ADM_INIT_PLAYOUT
+import io.agora.rtc2.Constants.ERR_JOIN_CHANNEL_REJECTED
+import io.agora.rtc2.IRtcEngineEventHandler
+import io.agora.rtc2.RtcEngine
+import io.agora.rtc2.RtcEngineConfig
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Runnable
@@ -227,8 +227,12 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
     /**
      * 直播场景下用户角色已切换回调。如从观众切换为主播，反之亦然
      */
-    override fun onClientRoleChanged(oldRole: Int, newRole: Int) {
-        super.onClientRoleChanged(oldRole, newRole)
+    override fun onClientRoleChanged(
+        oldRole: Int,
+        newRole: Int,
+        newRoleOptions: ClientRoleOptions?
+    ) {
+        super.onClientRoleChanged(oldRole, newRole, newRoleOptions)
         log("onClientRoleChanged, oldRole$oldRole, newRole:$newRole", true)
     }
 
@@ -773,7 +777,7 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
         getRtcEngine().startAudioMixing(
             filePath,
             loopback,
-            replace,
+            1,
             cycle
         ) //如需多次调用 startAudioMixing，请确保调用间隔大于 500 ms
     }
@@ -918,7 +922,7 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
         super.onAudioMixingStateChanged(state, reason)
         logMusic("onAudioMixingStateChanged, state:$state, reason:$reason")
         when (state) {
-            MEDIA_ENGINE_AUDIO_EVENT_MIXING_PLAY -> {
+            Constants.AUDIO_MIXING_STATE_PLAYING -> {
                 val mediaMusicReason = when (reason) {
                     AUDIO_MIXING_REASON_ONE_LOOP_COMPLETED -> MediaMusicReason.ONE_LOOP_COMPLETED
                     AUDIO_MIXING_REASON_RESUMED_BY_USER -> MediaMusicReason.RESUMED_BY_USER
@@ -929,7 +933,7 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
                 runOnUiThread(musicPlayProgressRunnable, 500)
             }
 
-            MEDIA_ENGINE_AUDIO_EVENT_MIXING_PAUSED -> {
+            AUDIO_MIXING_STATE_PAUSED -> {
                 val mediaMusicReason = when (reason) {
                     else -> MediaMusicReason.UNKNOWN
                 }
@@ -937,7 +941,7 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
                 switchMusicPlayState(MediaMusicPlayState.PAUSE, mediaMusicReason)
             }
 
-            MEDIA_ENGINE_AUDIO_EVENT_MIXING_STOPPED -> {
+            AUDIO_MIXING_STATE_STOPPED -> {
                 val mediaMusicReason = when (reason) {
                     AUDIO_MIXING_REASON_ALL_LOOPS_COMPLETED -> MediaMusicReason.ALL_LOOPS_COMPLETED
                     AUDIO_MIXING_REASON_STOPPED_BY_USER -> MediaMusicReason.STOPPED_BY_USER
@@ -947,7 +951,7 @@ internal class MediaService(private val config: IMediaConfig1) : IMediaService,
                 switchMusicPlayState(MediaMusicPlayState.STOP, mediaMusicReason)
             }
 
-            MEDIA_ENGINE_AUDIO_EVENT_MIXING_ERROR -> {
+            AUDIO_MIXING_STATE_FAILED -> {
                 val mediaMusicReason = when (reason) {
                     AUDIO_MIXING_REASON_CAN_NOT_OPEN -> MediaMusicReason.CAN_NOT_OPEN
                     AUDIO_MIXING_REASON_TOO_FREQUENT_CALL -> MediaMusicReason.TOO_FREQUENT_CALL
